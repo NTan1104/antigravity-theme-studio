@@ -1,0 +1,10 @@
+dist/
+daemon.pid
+daemon.log
+theme_config.json
+silent-start.vbs
+themes/user_media/*
+!themes/user_media/.gitkeep
+node_modules/
+__pycache__/
+*.pyc
