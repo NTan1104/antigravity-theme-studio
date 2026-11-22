@@ -25,15 +25,21 @@ Hoạt động hoàn toàn qua Chrome DevTools Protocol (CDP), **không can thi�
 
 ---
 
-## Hướng dẫn chạy nhanh (Windows)
+## Yêu cầu hệ thống
+
+- **Hệ điều hành:** Windows 10 / 11 *(macOS / Linux cần tự chạy `python3 scripts/build.py`, `node daemon/server.js` và truyền cờ `--remote-debugging-port` khi mở app)*.
+- **Node.js:** phiên bản **>= 22** (bắt buộc để dùng `WebSocket` và `fetch` tích hợp sẵn).
+- **Python 3:** dùng để chạy `scripts/build.py` đóng gói `dist/bundle.js`.
+- **Không cần `npm install`:** dự án không sử dụng thư viện bên thứ ba nào.
+
+## Hướng dẫn cài đặt & chạy nhanh (Windows)
 
 ```powershell
-cd D:\Projects\antigravity-theme-studio
+# 1. Tải mã nguồn về máy
+git clone https://github.com/NTan1104/antigravity-theme-studio.git
+cd antigravity-theme-studio
 
-# 1. Biên dịch gói giao diện (dist/bundle.js)
-npm run build
-
-# 2. Cài đặt daemon chạy ngầm (tự khởi động cùng Windows & tự gắn cờ CDP vào shortcut của cả 3 app)
+# 2. Cài đặt (tự động build dist/bundle.js, cài daemon tự chạy cùng Windows & gắn cờ CDP vào shortcut của cả 3 app)
 npm run install-win
 
 # 3. Mở ứng dụng kèm cổng CDP (hoặc mở trực tiếp từ Start Menu / Taskbar)
