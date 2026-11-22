@@ -681,7 +681,11 @@
         background-color: transparent !important;
         background-image: none !important;
       }
-      /* Split-browser hole cutout so live BrowserView is never covered */
+      /* Split-browser hole cutout so live BrowserView & its close/URL bar are never covered */
+      body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] {
+        background: transparent !important;
+        background-image: none !important;
+      }
       ${isVideoMode ? '' : `
       body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"]::after {
         content: "";
@@ -702,12 +706,26 @@
       body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] > :not([data-has-browser-hole="true"]):not([data-browser-hole]:not([data-browser-hole="false"])):not(.settings-modal-container),
       body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] .browser-hole-opaque:not([data-has-browser-hole="true"]),
       body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] [data-pane-id]:not([data-has-browser-hole="true"]),
-      body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] [data-tiling-pane]:not([data-has-browser-hole="true"]),
-      body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] [data-main-content-header]:not([data-has-browser-hole="true"]),
-      body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] [data-side-panel-strip]:not([data-has-browser-hole="true"]) {
+      body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] [data-tiling-pane]:not([data-has-browser-hole="true"]) {
         background: transparent !important;
         background-color: transparent !important;
         background-image: none !important;
+      }
+      /* Keep browser/side-panel header bar (URL + Close button) always visible & clickable above background layers */
+      .agy-shell [data-side-panel-strip],
+      .agy-shell [data-main-content-header] {
+        position: relative !important;
+        z-index: 20 !important;
+      }
+      body[data-has-browser-hole="true"] .agy-shell [data-side-panel-strip],
+      body[data-has-browser-hole="true"] .agy-shell [data-main-content-header] {
+        background: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.72)'} !important;
+        color: ${uiInk} !important;
+      }
+      .agy-shell [data-side-panel-strip] button,
+      .agy-shell [data-side-panel-strip] svg {
+        color: ${uiInk} !important;
+        opacity: 1 !important;
       }
       ` : `
       .agy-shell {
@@ -1731,12 +1749,14 @@
       return;
     }
 
-    const sidebar =
-      document.querySelector('.bg-sidebar, [data-sidebar="true"], aside') ||
-      document.querySelector('[data-testid="sidebar-split"]')?.firstElementChild ||
-      null;
+    const splitPane = document.querySelector('[data-testid="sidebar-split"]')?.firstElementChild || null;
+    const sidebarCandidates = [
+      splitPane,
+      ...Array.from(document.querySelectorAll('aside, [data-sidebar="true"], .bg-sidebar'))
+    ].filter((el) => el && el.getBoundingClientRect().height > 150 && el.getBoundingClientRect().width > 60);
 
-    const sidebarVisible = Boolean(sidebar && sidebar.getBoundingClientRect().width > 60);
+    const sidebar = sidebarCandidates[0] || null;
+    const sidebarVisible = Boolean(sidebar);
     if (existingBtn) {
       if (!sidebarVisible || !existingBtn.isConnected) {
         ensureFallbackFab(true);
@@ -1751,7 +1771,7 @@
       return;
     }
 
-    const anchors = ['customizations', 'plugins', 'skills', 'automations', 'settings', 'mcp'];
+    const anchors = ['customizations', 'automations', 'plugins', 'skills', 'settings', 'mcp'];
     const nodes = Array.from(sidebar.querySelectorAll('span, a, button'));
     const anchor = nodes.find((n) => anchors.includes((n.textContent || '').trim().toLowerCase()));
 
