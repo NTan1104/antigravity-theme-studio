@@ -331,7 +331,7 @@
       layer = null;
     }
 
-    if (!state.wpEnabled || state.mode === 'gradient') {
+    if (!state.wpEnabled) {
       if (layer) {
         releaseVideoDecoder(layer.querySelector('video'));
         layer.classList.add('ats-bg-hidden');
@@ -361,12 +361,26 @@
     const imgEl = layer.querySelector('#ats-live-bg-img');
     const scrimEl = layer.querySelector('#ats-live-scrim');
     const bgPos = state.bgPosition || mainTheme.bgPosition || 'center center';
+    const pureBg = mainTheme.pureBg || 'radial-gradient(circle at 20% 20%, #0f172a 0%, #020617 70%)';
+    layer.style.background = pureBg;
 
     if (scrimEl) {
       scrimEl.style.background = `linear-gradient(180deg, rgba(${overlayRgb}, ${overlayAlpha}) 0%, rgba(${overlayRgb}, ${overlayAlpha}) 100%)`;
     }
     if (videoEl) videoEl.style.objectPosition = bgPos;
     if (imgEl) imgEl.style.objectPosition = bgPos;
+
+    if (state.mode === 'gradient') {
+      releaseVideoDecoder(videoEl);
+      if (imgEl) {
+        imgEl.style.display = 'none';
+        imgEl.removeAttribute('src');
+        imgEl.removeAttribute('data-src');
+      }
+      if (scrimEl) scrimEl.style.opacity = '1';
+      layer.classList.remove('ats-bg-hidden');
+      return;
+    }
 
     const rawVideo = state.activeVideo || mainTheme.wallpaperVideo || '';
     const rawImage = state.activeImage || mainTheme.wallpaper || '';
@@ -650,12 +664,11 @@
       ${state.wpEnabled ? `
       .agy-shell {
         position: relative !important;
-        background-image: ${bgLayers} !important;
-        background-size: cover !important;
-        background-position: ${bgPosition} !important;
-        background-repeat: no-repeat !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        background-image: none !important;
       }
-      .agy-shell > :not(#ats-live-bg-layer):not([data-has-browser-hole="true"]) {
+      .agy-shell > :not(#ats-live-bg-layer) {
         position: relative;
         z-index: 2;
       }
@@ -682,24 +695,6 @@
         background-image: none !important;
       }
       /* Split-browser hole cutout so live BrowserView & its close/URL bar are never covered */
-      body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] {
-        background: transparent !important;
-        background-image: none !important;
-      }
-      ${isVideoMode ? '' : `
-      body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"]::after {
-        content: "";
-        position: absolute;
-        inset: 0;
-        z-index: 0;
-        pointer-events: none;
-        background-image: ${bgLayers};
-        background-size: cover;
-        background-position: ${bgPosition};
-        background-repeat: no-repeat;
-        clip-path: var(--ats-hole-clip, none);
-        will-change: transform;
-      }`}
       body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] > #ats-live-bg-layer {
         clip-path: var(--ats-hole-clip, none) !important;
       }
@@ -716,9 +711,6 @@
       .agy-shell [data-main-content-header] {
         position: relative !important;
         z-index: 20 !important;
-      }
-      body[data-has-browser-hole="true"] .agy-shell [data-side-panel-strip],
-      body[data-has-browser-hole="true"] .agy-shell [data-main-content-header] {
         background: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.72)'} !important;
         color: ${uiInk} !important;
       }
@@ -2700,7 +2692,7 @@
 
   function tick() {
     const expectedHost = isIdeHost() ? document.body : findActiveShell();
-    if (expectedHost && state.wpEnabled && state.mode !== 'gradient') {
+    if (expectedHost && state.wpEnabled) {
       const liveLayer = document.getElementById('ats-live-bg-layer');
       if (!liveLayer || liveLayer.tagName !== 'ATS-LIVE-BG' || liveLayer.parentElement !== expectedHost) {
         applyTheme();
