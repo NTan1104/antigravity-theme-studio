@@ -1236,6 +1236,22 @@
   }
 
   function hookShellMetrics() {
+    if (isIdeHost()) {
+      const wb = document.querySelector('.monaco-workbench');
+      const wv = document.querySelector('iframe.webview');
+      if (typeof ResizeObserver !== 'undefined') {
+        if (!window.__ATS_SHELL_RO__) {
+          window.__ATS_SHELL_RO__ = new ResizeObserver(syncShellMetrics);
+          if (wb) window.__ATS_SHELL_RO__.observe(wb);
+        }
+        if (wv && window.__ATS_WV_EL__ !== wv) {
+          try { window.__ATS_SHELL_RO__.observe(wv); } catch (_) {}
+          window.__ATS_WV_EL__ = wv;
+        }
+      }
+      syncShellMetrics();
+      return;
+    }
     const shell = findActiveShell();
     if (!shell) return;
     if (!window.__ATS_SHELL_RO__ && typeof ResizeObserver !== 'undefined') {
@@ -1878,6 +1894,8 @@
   }
 
   function renderStudioPanels(backdrop) {
+    const badge = backdrop.querySelector('.ats-badge');
+    if (badge) badge.textContent = state.preset || DEFAULT_PRESET_KEY;
     renderBgPanel(backdrop.querySelector('.ats-panel[data-panel="bg"]'), backdrop);
     renderLookPanel(backdrop.querySelector('.ats-panel[data-panel="look"]'));
     renderAudioPanel(backdrop.querySelector('.ats-panel[data-panel="audio"]'));

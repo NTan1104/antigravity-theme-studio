@@ -1,6 +1,6 @@
-# Antigravity Theme Studio (Dark Glass Engine)
+# Antigravity Theme Studio
 
-Hệ thống tùy biến giao diện **Dark Glass + Live Video / Image Wallpaper + Boot HUD + Task Complete Audio** đồng bộ cho cả 3 ứng dụng:
+Hệ thống tùy biến giao diện **Live Video / Image / Gradient Wallpaper + Boot HUD + Task Complete Audio** đồng bộ cho cả 3 ứng dụng:
 - **Antigravity** (cổng CDP `9222`)
 - **Antigravity IDE** (cổng CDP `9223`)
 - **Visual Studio Code** (cổng CDP `9224`)
