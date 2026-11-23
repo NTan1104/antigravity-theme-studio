@@ -60,7 +60,7 @@ const portWebviewRects = new Map();
 let lastGlobalTaskSoundAt = 0;
 let mediaPort = 0;
 let mediaServer = null;
-let lastPort = null;
+let pollingCdp = false;
 let missingBundleLogged = false;
 
 function log(msg) {
@@ -120,9 +120,16 @@ function readConfig() {
 function saveConfig(patch) {
   try {
     const merged = { ...readConfig(), ...patch };
+    const serialized = JSON.stringify(merged, null, 2);
     const tmpFile = `${CONFIG_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpFile, JSON.stringify(merged, null, 2), 'utf8');
-    fs.renameSync(tmpFile, CONFIG_FILE);
+    fs.writeFileSync(tmpFile, serialized, 'utf8');
+    try {
+      fs.renameSync(tmpFile, CONFIG_FILE);
+    } catch (renameErr) {
+      // Windows AV/indexer can briefly lock CONFIG_FILE during renameSync -> safe direct write fallback
+      fs.writeFileSync(CONFIG_FILE, serialized, 'utf8');
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+    }
     return merged;
   } catch (err) {
     log(`Config save error: ${err.message}`);
@@ -160,7 +167,18 @@ function getFileMd5(filePath, stat) {
   const cacheKey = `${filePath}:${stat.size}:${stat.mtimeMs}`;
   const cached = md5Cache.get(cacheKey);
   if (cached) return cached;
-  const hash = crypto.createHash('md5').update(fs.readFileSync(filePath)).digest('hex');
+  const hashObj = crypto.createHash('md5');
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const chunk = Buffer.allocUnsafe(256 * 1024);
+    let bytesRead = 0;
+    while ((bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      hashObj.update(bytesRead === chunk.length ? chunk : chunk.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  const hash = hashObj.digest('hex');
   if (md5Cache.size > 500) md5Cache.clear();
   md5Cache.set(cacheKey, hash);
   return hash;
@@ -768,11 +786,39 @@ function isAntigravityTarget(t) {
   );
 }
 
+function extractWorkspaceHint(urlStr) {
+  try {
+    const u = new URL(String(urlStr || ''));
+    let wsUri = u.searchParams.get('workspaceUri') || '';
+    if (!wsUri) return '';
+    try { wsUri = decodeURIComponent(wsUri); } catch (_) {}
+    try { wsUri = decodeURIComponent(wsUri); } catch (_) {}
+    const clean = wsUri.replace(/[\\/]+$/, '');
+    const parts = clean.split(/[\\/]/).filter(Boolean);
+    return (parts[parts.length - 1] || '').toLowerCase();
+  } catch (_) {
+    return '';
+  }
+}
+
+function getMatchingRectForExt(portPrefix, workspaceHint) {
+  const ideSessions = Array.from(sessions.values()).filter(
+    (s) => s.portPrefix === portPrefix && s.isIdeTarget && s.lastRect
+  );
+  if (workspaceHint && ideSessions.length > 1) {
+    const matched = ideSessions.find((s) => (s.lastTitle || '').includes(workspaceHint));
+    if (matched) return matched.lastRect;
+  }
+  if (ideSessions.length === 1) return ideSessions[0].lastRect;
+  return portWebviewRects.get(portPrefix) || null;
+}
+
 function attachTarget(sessionKey, target) {
   const ws = new globalThis.WebSocket(target.webSocketDebuggerUrl);
   let nextId = 1;
   const pending = new Map();
   let newDocScriptId = null;
+  let newDocRefreshTimer = null;
   const session = { id: sessionKey, ws, target };
   sessions.set(sessionKey, session);
 
@@ -799,26 +845,82 @@ function attachTarget(sessionKey, target) {
   const isIdeTarget = String(target.url || '').startsWith('vscode-file://');
   const isExtTarget = String(target.url || '').includes('extensionView=true');
   const portPrefix = String(sessionKey).split(':')[0];
+  const workspaceHint = isExtTarget ? extractWorkspaceHint(target.url) : '';
   session.send = send;
+  session.isIdeTarget = isIdeTarget;
   session.isExtTarget = isExtTarget;
   session.portPrefix = portPrefix;
+  session.workspaceHint = workspaceHint;
+  session.lastTitle = String(target.title || '').toLowerCase();
+  session.lastRect = null;
+  session.lastInlineImageKey = null;
+  session.lastInlineVideoKey = null;
+
+  const pushRectToExt = async () => {
+    if (!isExtTarget) return;
+    const rect = getMatchingRectForExt(portPrefix, workspaceHint);
+    if (rect) {
+      try {
+        await send('Runtime.evaluate', {
+          expression: `window.__ATS_APPLY_EXT_RECT__&&window.__ATS_APPLY_EXT_RECT__(${JSON.stringify(rect)});`,
+          awaitPromise: false,
+        });
+      } catch (_) {}
+    }
+    for (const other of sessions.values()) {
+      if (other.portPrefix === portPrefix && other.isIdeTarget) {
+        other.send('Runtime.evaluate', {
+          expression: 'window.__ATS_ENGINE__&&window.__ATS_ENGINE__.syncRect&&window.__ATS_ENGINE__.syncRect(true);',
+          awaitPromise: false,
+        }).catch(() => {});
+      }
+    }
+  };
 
   session.reinject = async (updateNewDoc = true) => {
     const src = buildInjectedSource(isIdeTarget);
     if (!src) return;
+    const cfg = readConfig();
+    session.lastInlineImageKey = isIdeTarget ? String(cfg.activeImage || '') : null;
+    session.lastInlineVideoKey = isIdeTarget ? String(cfg.activeVideo || '') : null;
     if (updateNewDoc) {
       await registerNewDocScript(src);
     }
     try {
       await send('Runtime.evaluate', { expression: src, awaitPromise: false });
-      if (isExtTarget && portWebviewRects.has(portPrefix)) {
-        const rect = portWebviewRects.get(portPrefix);
-        await send('Runtime.evaluate', {
-          expression: `window.__ATS_APPLY_EXT_RECT__&&window.__ATS_APPLY_EXT_RECT__(${JSON.stringify(rect)});`,
-          awaitPromise: false,
-        });
-      }
+      await pushRectToExt();
     } catch (_) {}
+  };
+
+  session.applyConfigUpdate = async (saved) => {
+    try {
+      const parts = [];
+      if (isIdeTarget) {
+        const imgKey = String(saved.activeImage || '');
+        const vidKey = String(saved.activeVideo || '');
+        if (session.lastInlineImageKey !== imgKey) {
+          session.lastInlineImageKey = imgKey;
+          const inImg = imgKey ? resolveLocalMediaAsDataUri(imgKey, 15 * 1024 * 1024) : '';
+          parts.push(`window.__ATS_INLINE_IMAGE__=${JSON.stringify(inImg)};`);
+        }
+        if (session.lastInlineVideoKey !== vidKey) {
+          session.lastInlineVideoKey = vidKey;
+          const inVid = (vidKey && /\.webm$/i.test(vidKey))
+            ? resolveLocalMediaAsDataUri(vidKey, 25 * 1024 * 1024)
+            : '';
+          parts.push(`window.__ATS_INLINE_VIDEO__=${JSON.stringify(inVid)};`);
+        }
+      }
+      parts.push(`window.__ATS_ENGINE__&&window.__ATS_ENGINE__.updateConfig?window.__ATS_ENGINE__.updateConfig(${JSON.stringify(saved)}):(window.__ATS_ENGINE__&&window.__ATS_ENGINE__.reapply());`);
+      await send('Runtime.evaluate', { expression: parts.join(''), awaitPromise: false });
+    } catch (_) {}
+
+    clearTimeout(newDocRefreshTimer);
+    newDocRefreshTimer = setTimeout(() => {
+      if (ws.readyState !== 1) return;
+      const src = buildInjectedSource(isIdeTarget);
+      if (src) registerNewDocScript(src).catch(() => {});
+    }, 600);
   };
 
   ws.addEventListener('open', async () => {
@@ -832,19 +934,17 @@ function attachTarget(sessionKey, target) {
       try {
         await send('Runtime.addBinding', { name: 'atsSaveConfig' });
         await send('Runtime.addBinding', { name: 'atsReportWebviewRect' });
+        await send('Runtime.addBinding', { name: 'atsOpenStudio' });
       } catch (_) {}
 
       const src = buildInjectedSource(isIdeTarget);
       if (src) {
+        const cfg = readConfig();
+        session.lastInlineImageKey = isIdeTarget ? String(cfg.activeImage || '') : null;
+        session.lastInlineVideoKey = isIdeTarget ? String(cfg.activeVideo || '') : null;
         await registerNewDocScript(src);
         await send('Runtime.evaluate', { expression: src, awaitPromise: false });
-        if (isExtTarget && portWebviewRects.has(portPrefix)) {
-          const rect = portWebviewRects.get(portPrefix);
-          await send('Runtime.evaluate', {
-            expression: `window.__ATS_APPLY_EXT_RECT__&&window.__ATS_APPLY_EXT_RECT__(${JSON.stringify(rect)});`,
-            awaitPromise: false,
-          });
-        }
+        await pushRectToExt();
       }
     } catch (err) {
       log(`Injection error (${target.id}): ${err.message}`);
@@ -872,18 +972,35 @@ function attachTarget(sessionKey, target) {
         const nextCfg = JSON.parse(msg.params.payload || '{}');
         const saved = saveConfig(nextCfg) || nextCfg;
         if (isIdeTarget) {
-          const inImg = saved.activeImage ? resolveLocalMediaAsDataUri(saved.activeImage, 15 * 1024 * 1024) : '';
-          const inVid = (saved.activeVideo && /\.webm$/i.test(String(saved.activeVideo)))
-            ? resolveLocalMediaAsDataUri(saved.activeVideo, 25 * 1024 * 1024)
-            : '';
-          send('Runtime.evaluate', {
-            expression: `window.__ATS_INLINE_IMAGE__=${JSON.stringify(inImg)};window.__ATS_INLINE_VIDEO__=${JSON.stringify(inVid)};window.__ATS_ENGINE__&&window.__ATS_ENGINE__.reapply();`,
-            awaitPromise: false,
-          }).catch(() => {});
+          const imgKey = String(saved.activeImage || '');
+          const vidKey = String(saved.activeVideo || '');
+          const parts = [];
+          if (session.lastInlineImageKey !== imgKey) {
+            session.lastInlineImageKey = imgKey;
+            const inImg = imgKey ? resolveLocalMediaAsDataUri(imgKey, 15 * 1024 * 1024) : '';
+            parts.push(`window.__ATS_INLINE_IMAGE__=${JSON.stringify(inImg)};`);
+          }
+          if (session.lastInlineVideoKey !== vidKey) {
+            session.lastInlineVideoKey = vidKey;
+            const inVid = (vidKey && /\.webm$/i.test(vidKey))
+              ? resolveLocalMediaAsDataUri(vidKey, 25 * 1024 * 1024)
+              : '';
+            parts.push(`window.__ATS_INLINE_VIDEO__=${JSON.stringify(inVid)};`);
+          }
+          if (parts.length > 0) {
+            parts.push('window.__ATS_ENGINE__&&window.__ATS_ENGINE__.reapply();');
+            send('Runtime.evaluate', { expression: parts.join(''), awaitPromise: false }).catch(() => {});
+          }
+          clearTimeout(newDocRefreshTimer);
+          newDocRefreshTimer = setTimeout(() => {
+            if (ws.readyState !== 1) return;
+            const src = buildInjectedSource(true);
+            if (src) registerNewDocScript(src).catch(() => {});
+          }, 600);
         }
         for (const other of sessions.values()) {
           if (other.id !== sessionKey) {
-            other.reinject(true);
+            other.applyConfigUpdate(saved);
           }
         }
       } catch (err) {
@@ -893,9 +1010,20 @@ function attachTarget(sessionKey, target) {
       try {
         const rect = JSON.parse(msg.params.payload || '{}');
         if (rect && Number.isFinite(rect.wbW) && Number.isFinite(rect.wbH)) {
+          const rectTitle = String(rect.title || target.title || '').toLowerCase();
+          session.lastRect = rect;
+          if (rectTitle) session.lastTitle = rectTitle;
           portWebviewRects.set(portPrefix, rect);
+
+          const ideCountOnPort = Array.from(sessions.values()).filter(
+            (s) => s.portPrefix === portPrefix && s.isIdeTarget
+          ).length;
+
           for (const other of sessions.values()) {
             if (other.portPrefix === portPrefix && other.isExtTarget) {
+              if (ideCountOnPort > 1 && other.workspaceHint && rectTitle && !rectTitle.includes(other.workspaceHint)) {
+                continue;
+              }
               other.send('Runtime.evaluate', {
                 expression: `window.__ATS_APPLY_EXT_RECT__&&window.__ATS_APPLY_EXT_RECT__(${JSON.stringify(rect)});`,
                 awaitPromise: false,
@@ -904,6 +1032,19 @@ function attachTarget(sessionKey, target) {
           }
         }
       } catch (_) {}
+    } else if (msg.method === 'Runtime.bindingCalled' && msg.params?.name === 'atsOpenStudio') {
+      const ideCandidates = Array.from(sessions.values()).filter(
+        (s) => s.portPrefix === portPrefix && s.isIdeTarget
+      );
+      const matched = (workspaceHint && ideCandidates.length > 1)
+        ? (ideCandidates.find((s) => (s.lastTitle || '').includes(workspaceHint)) || ideCandidates[0])
+        : ideCandidates[0];
+      if (matched) {
+        matched.send('Runtime.evaluate', {
+          expression: 'window.__ATS_ENGINE__&&window.__ATS_ENGINE__.openStudio&&window.__ATS_ENGINE__.openStudio();',
+          awaitPromise: false,
+        }).catch(() => {});
+      }
     } else if (msg.method === 'Page.frameNavigated' && msg.params?.frame && !msg.params.frame.parentId) {
       // Only re-evaluate if addScriptToEvaluateOnNewDocument didn't already run or to refresh media base
       await session.reinject(false);
@@ -911,6 +1052,7 @@ function attachTarget(sessionKey, target) {
   });
 
   const cleanup = () => {
+    clearTimeout(newDocRefreshTimer);
     for (const p of pending.values()) {
       p.reject(new Error('WebSocket closed'));
     }
@@ -926,33 +1068,42 @@ function attachTarget(sessionKey, target) {
 }
 
 async function pollCdp() {
-  const ports = resolveCdpPorts();
-  const liveKeys = new Set();
+  if (pollingCdp) return;
+  pollingCdp = true;
+  try {
+    const ports = resolveCdpPorts();
+    const liveKeys = new Set();
 
-  for (const port of ports) {
-    let targets;
-    try {
-      targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
-    } catch (_) {
-      continue;
-    }
-    if (!Array.isArray(targets)) continue;
+    const results = await Promise.all(
+      ports.map(async (port) => {
+        try {
+          const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
+          return { port, targets: Array.isArray(targets) ? targets : [] };
+        } catch (_) {
+          return { port, targets: [] };
+        }
+      })
+    );
 
-    const pages = targets.filter(isAntigravityTarget);
-    for (const page of pages) {
-      const key = `${port}:${page.id}`;
-      liveKeys.add(key);
-      if (!sessions.has(key)) {
-        attachTarget(key, page);
+    for (const { port, targets } of results) {
+      const pages = targets.filter(isAntigravityTarget);
+      for (const page of pages) {
+        const key = `${port}:${page.id}`;
+        liveKeys.add(key);
+        if (!sessions.has(key)) {
+          attachTarget(key, page);
+        }
       }
     }
-  }
 
-  for (const [key, session] of sessions.entries()) {
-    if (!liveKeys.has(key)) {
-      try { session.ws.close(); } catch (_) {}
-      sessions.delete(key);
+    for (const [key, session] of sessions.entries()) {
+      if (!liveKeys.has(key)) {
+        try { session.ws.close(); } catch (_) {}
+        sessions.delete(key);
+      }
     }
+  } finally {
+    pollingCdp = false;
   }
 }
 

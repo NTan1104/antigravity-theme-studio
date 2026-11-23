@@ -80,6 +80,7 @@ if (-not $SkipShortcuts) {
     $ShortcutDirs = @(
         [Environment]::GetFolderPath('Desktop'),
         [Environment]::GetFolderPath('StartMenu'),
+        [Environment]::GetFolderPath('CommonStartMenu'),
         (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar')
     ) | Where-Object { $_ -and (Test-Path $_) }
 

@@ -35,21 +35,24 @@ function resolveCdpPorts() {
       path.join(appData, 'antigravity', 'DevToolsActivePort'),
       path.join(appData, 'Antigravity', 'DevToolsActivePort'),
       path.join(appData, 'Antigravity IDE', 'DevToolsActivePort'),
-      path.join(appData, 'antigravity-ide', 'DevToolsActivePort')
+      path.join(appData, 'antigravity-ide', 'DevToolsActivePort'),
+      path.join(appData, 'Code', 'DevToolsActivePort')
     );
   } else if (process.platform === 'darwin') {
     const sup = path.join(home, 'Library', 'Application Support');
     candidates.push(
       path.join(sup, 'antigravity', 'DevToolsActivePort'),
       path.join(sup, 'Antigravity', 'DevToolsActivePort'),
-      path.join(sup, 'Antigravity IDE', 'DevToolsActivePort')
+      path.join(sup, 'Antigravity IDE', 'DevToolsActivePort'),
+      path.join(sup, 'Code', 'DevToolsActivePort')
     );
   } else {
     const xdg = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
     candidates.push(
       path.join(xdg, 'antigravity', 'DevToolsActivePort'),
       path.join(xdg, 'Antigravity', 'DevToolsActivePort'),
-      path.join(xdg, 'Antigravity IDE', 'DevToolsActivePort')
+      path.join(xdg, 'Antigravity IDE', 'DevToolsActivePort'),
+      path.join(xdg, 'Code', 'DevToolsActivePort')
     );
   }
 
@@ -133,12 +136,16 @@ const INSPECT_EXPR = `(() => {
   const styleEl = document.getElementById('ats-active-theme');
   const agyShell = document.querySelector('.agy-shell');
   const ideWorkbench = document.querySelector('.monaco-workbench');
+  const isExtView = /[?&]extensionView=true\\b/i.test(location.search || '');
   const videoEl = document.getElementById('ats-live-bg-video');
   const scrollers = Array.from(document.querySelectorAll(':is(.agy-shell, .monaco-workbench) :is(.overflow-y-auto, [data-main-content-body], [data-side-panel-body], .monaco-scrollable-element)'));
   const liveBlurScrollers = scrollers.filter((el) => /blur\\(/i.test(getComputedStyle(el).backdropFilter || ''));
-  const hostType = agyShell
-    ? 'Antigravity'
-    : (ideWorkbench ? (/Visual Studio Code/i.test(document.title) ? 'VS Code' : 'Antigravity IDE') : 'Unknown');
+  const hostType = isExtView
+    ? (/Visual\\+Studio\\+Code/i.test(location.search || '') ? 'VS Code (Extension View)' : 'Antigravity IDE (Extension View)')
+    : agyShell
+      ? 'Antigravity'
+      : (ideWorkbench ? (/Visual Studio Code/i.test(document.title) ? 'VS Code' : 'Antigravity IDE') : 'Unknown');
+  const extBeforeContent = (isExtView && agyShell) ? getComputedStyle(agyShell, '::before').content : 'none';
   return {
     hostType,
     url: location.href,
@@ -148,6 +155,8 @@ const INSPECT_EXPR = `(() => {
     hasBgLayer: Boolean(document.getElementById('ats-live-bg-layer')),
     videoPlaying: Boolean(videoEl && !videoEl.paused && videoEl.readyState >= 2),
     sidebarBtnPresent: Boolean(document.getElementById('ats-sidebar-btn')),
+    extRectSynced: isExtView ? Boolean(window.__ATS_EXT_RECT__) : null,
+    extUnifiedGlassLeak: isExtView ? (extBeforeContent !== 'none' && extBeforeContent !== '') : false,
     hasLiveBlurRule: liveBlurScrollers.length > 0
   };
 })()`;
@@ -187,6 +196,10 @@ async function main() {
   }
   if (themed.some((r) => r.hasLiveBlurRule)) {
     console.error('\nFAIL — Phát hiện live backdrop-filter blur trên vùng cuộn.');
+    process.exit(1);
+  }
+  if (themed.some((r) => r.extUnifiedGlassLeak)) {
+    console.error('\nFAIL — Phát hiện .agy-shell::before (Unified Glass) bị rò sang khung extensionView của IDE.');
     process.exit(1);
   }
 

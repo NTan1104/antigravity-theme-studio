@@ -425,11 +425,12 @@
           videoEl.onplaying = markReady;
           videoEl.onerror = () => {
             videoEl.style.opacity = '0';
+            videoEl.style.display = 'none';
             if (isIdeHost()) {
               bgStatusError = true;
               bgStatusText = 'Antigravity IDE không hỗ trợ codec H.264 (.mp4). Hãy dùng video .webm hoặc Ảnh tĩnh (.png/.jpg/.webp) cho bản IDE.';
             }
-            // Graceful fallback: show activeImage if available, otherwise hide layer so pureBg gradient shines through
+            // Graceful fallback: show activeImage if available, otherwise keep pureBg gradient layer visible
             if (imageUrl && imgEl) {
               imgEl.style.display = 'block';
               if (imgEl.getAttribute('data-src') !== imageUrl) {
@@ -437,9 +438,10 @@
                 imgEl.src = imageUrl;
               }
               if (scrimEl) scrimEl.style.opacity = '1';
+              layer.classList.remove('ats-bg-hidden');
             } else {
-              if (scrimEl) scrimEl.style.opacity = '0';
-              layer.classList.add('ats-bg-hidden');
+              if (scrimEl) scrimEl.style.opacity = '1';
+              layer.classList.remove('ats-bg-hidden');
             }
           };
           videoEl.src = videoUrl;
@@ -571,16 +573,11 @@
       }
     }
     const pureBg = mainTheme.pureBg || 'radial-gradient(circle at 20% 20%, #0f172a 0%, #020617 70%)';
-    const bgLayers = extWebview
-      ? 'none'
-      : (isImageMode
-          ? `linear-gradient(180deg, rgba(${overlayRgb}, ${overlayAlpha}) 0%, rgba(${overlayRgb}, ${overlayAlpha}) 100%), url("${sanitizeCssUrl(wpImageUrl)}")`
-          : pureBg);
 
-    const useUnifiedGlass = Boolean(state.wpEnabled && mainTheme.unifiedGlass && (isVideoMode || isImageMode));
+    const useUnifiedGlass = Boolean(!extWebview && state.wpEnabled && mainTheme.unifiedGlass && (isVideoMode || isImageMode));
     if (useUnifiedGlass && isImageMode) {
       syncPrebakedGlass(wpImageUrl, overlayRgb, overlayAlpha, mainTheme.headerBg || '', state.glassBlur);
-    } else if (!isVideoMode) {
+    } else if (!useUnifiedGlass || !isVideoMode) {
       syncPrebakedGlass(null);
     }
 
@@ -1003,14 +1000,38 @@
       ${avatarCss}
 
       /* ==================================================================
+         IDE Extension View (Right Chat Panel): Clean Full-Transparency Mode
+         ================================================================== */
+      ${(extWebview && state.wpEnabled) ? `
+      body.ats-ext-webview,
+      body.ats-ext-webview #root,
+      body.ats-ext-webview .agy-shell,
+      body.ats-ext-webview .agy-shell > div,
+      body.ats-ext-webview .agy-shell [data-main-content-body="true"],
+      body.ats-ext-webview .agy-shell [data-side-panel-body="true"] {
+        background: transparent !important;
+        background-color: transparent !important;
+        background-image: none !important;
+      }
+      body.ats-ext-webview .agy-shell::before {
+        content: none !important;
+        display: none !important;
+      }
+      body.ats-ext-webview .agy-shell [class*="@container/titlebar"] {
+        background: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.28)'} !important;
+        backdrop-filter: none !important;
+      }
+      body.ats-ext-webview .agy-shell [data-testid="agent-response"] {
+        background: ${isLight ? 'rgba(255, 255, 255, 0.56)' : `rgba(${overlayRgb}, 0.42)`} !important;
+      }
+      ` : ''}
+
+      /* ==================================================================
          Antigravity IDE (.monaco-workbench) Dark Glass Engine (Zero Live Blur)
          ================================================================== */
       body.ats-ide-active {
         ${state.wpEnabled ? `
-        background-image: ${bgLayers} !important;
-        background-size: cover !important;
-        background-position: ${bgPosition} !important;
-        background-repeat: no-repeat !important;
+        background: ${pureBg} !important;
         ` : 'background: #111113 !important;'}
       }
       body.ats-ide-active > #ats-live-bg-layer {
@@ -1018,23 +1039,31 @@
         inset: 0 !important;
         z-index: 0 !important;
       }
+      ${state.wpEnabled ? `
       body.ats-ide-active .monaco-workbench {
         background: transparent !important;
         background-color: transparent !important;
         z-index: 1 !important;
         --vscode-editor-background: transparent !important;
         --vscode-editorGroup-emptyBackground: transparent !important;
-        --vscode-sideBar-background: rgba(8, 12, 22, 0.32) !important;
-        --vscode-sideBarSectionHeader-background: rgba(8, 12, 22, 0.24) !important;
-        --vscode-activityBar-background: rgba(8, 12, 22, 0.42) !important;
-        --vscode-panel-background: rgba(9, 14, 26, 0.68) !important;
-        --vscode-statusBar-background: rgba(8, 12, 22, 0.58) !important;
-        --vscode-statusBar-noFolderBackground: rgba(8, 12, 22, 0.58) !important;
-        --vscode-titleBar-activeBackground: rgba(8, 12, 22, 0.52) !important;
-        --vscode-titleBar-inactiveBackground: rgba(8, 12, 22, 0.62) !important;
-        --vscode-editorGroupHeader-tabsBackground: rgba(8, 12, 22, 0.38) !important;
+        --vscode-sideBar-background: ${mainTheme.sidebarBg || 'rgba(8, 12, 22, 0.32)'} !important;
+        --vscode-sideBarSectionHeader-background: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.24)'} !important;
+        --vscode-activityBar-background: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.42)'} !important;
+        --vscode-panel-background: ${mainTheme.aiCardBg || 'rgba(9, 14, 26, 0.68)'} !important;
+        --vscode-statusBar-background: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.58)'} !important;
+        --vscode-statusBar-noFolderBackground: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.58)'} !important;
+        --vscode-titleBar-activeBackground: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.52)'} !important;
+        --vscode-titleBar-inactiveBackground: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.62)'} !important;
+        --vscode-editorGroupHeader-tabsBackground: ${mainTheme.headerBg || 'rgba(8, 12, 22, 0.38)'} !important;
+        ${isLight ? `
+        --vscode-foreground: ${uiInk} !important;
+        --vscode-sideBar-foreground: ${uiInk} !important;
+        --vscode-activityBar-foreground: ${uiInk} !important;
+        --vscode-statusBar-foreground: ${uiInk} !important;
+        --vscode-titleBar-activeForeground: ${uiInk} !important;
+        --vscode-titleBar-inactiveForeground: ${uiMutedInk} !important;
+        ` : ''}
       }
-      ${state.wpEnabled ? `
       body.ats-ide-active .monaco-workbench .monaco-grid-view,
       body.ats-ide-active .monaco-workbench .monaco-grid-branch-node,
       body.ats-ide-active .monaco-workbench .split-view-container,
@@ -1051,6 +1080,7 @@
       body.ats-ide-active .monaco-workbench .part.sidebar .pane-body,
       body.ats-ide-active .monaco-workbench .part.sidebar .monaco-list,
       body.ats-ide-active .monaco-workbench .part.sidebar .monaco-list-rows,
+      body.ats-ide-active .monaco-workbench .part.auxiliarybar,
       body.ats-ide-active .monaco-workbench .part.auxiliarybar > .content,
       body.ats-ide-active .monaco-workbench .part.auxiliarybar .pane-body,
       body.ats-ide-active .monaco-workbench .part.auxiliarybar .monaco-list,
@@ -1075,8 +1105,7 @@
         border-right: 1px solid ${mainTheme.headerBorder || 'rgba(56, 189, 248, 0.12)'} !important;
         backdrop-filter: none !important;
       }
-      body.ats-ide-active .monaco-workbench .part.sidebar,
-      body.ats-ide-active .monaco-workbench .part.auxiliarybar {
+      body.ats-ide-active .monaco-workbench .part.sidebar {
         background-color: ${mainTheme.sidebarBg || 'rgba(8, 12, 22, 0.62)'} !important;
         backdrop-filter: none !important;
       }
@@ -1117,6 +1146,7 @@
 
     document.body.classList.add('ats-active');
     document.body.classList.toggle('ats-ide-active', isIdeHost());
+    document.body.classList.toggle('ats-ext-webview', extWebview);
     syncTitleBarOverlay();
     scheduleTitleBarSync();
     syncEmptyGreeting();
@@ -1136,7 +1166,46 @@
     root.style.setProperty('--ats-ext-right', 'auto');
   };
 
-  function syncShellMetrics() {
+  function findAntigravityWebview() {
+    const candidates = Array.from(document.querySelectorAll('iframe.webview')).filter((el) => {
+      try {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      } catch (_) {}
+      const r = el.getBoundingClientRect();
+      return r.width > 20 && r.height > 20 && r.right > 0 && r.bottom > 0;
+    });
+    if (!candidates.length) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    const aux = document.querySelector('.monaco-workbench .part.auxiliarybar');
+    const auxRect = aux ? aux.getBoundingClientRect() : null;
+    const hasAux = Boolean(auxRect && auxRect.width > 20 && auxRect.height > 20);
+
+    const overlapArea = (a, b) => {
+      const x = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+      const y = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+      return x * y;
+    };
+
+    let best = candidates[0];
+    let bestScore = -1;
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      let score = r.width * r.height;
+      if (hasAux) {
+        const ov = overlapArea(r, auxRect);
+        if (ov > 100) score = 1e12 + ov;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    return best;
+  }
+
+  function syncShellMetrics(forceReport = false) {
     if (isExtensionWebview()) {
       if (window.__ATS_EXT_RECT__) {
         window.__ATS_APPLY_EXT_RECT__(window.__ATS_EXT_RECT__);
@@ -1153,7 +1222,7 @@
       return;
     }
     if (isIdeHost()) {
-      const wv = document.querySelector('iframe.webview');
+      const wv = findAntigravityWebview();
       if (wv && typeof window.atsReportWebviewRect === 'function') {
         const r = wv.getBoundingClientRect();
         if (r.width > 20 && r.height > 20) {
@@ -1161,10 +1230,11 @@
             left: Math.round(r.left),
             top: Math.round(r.top),
             wbW: Math.round(window.innerWidth),
-            wbH: Math.round(window.innerHeight)
+            wbH: Math.round(window.innerHeight),
+            title: String(document.title || '')
           };
-          const sig = `${rect.left}|${rect.top}|${rect.wbW}|${rect.wbH}`;
-          if (window.__ATS_LAST_RECT_SIG__ !== sig) {
+          const sig = `${rect.left}|${rect.top}|${rect.wbW}|${rect.wbH}|${rect.title}`;
+          if (forceReport || window.__ATS_LAST_RECT_SIG__ !== sig) {
             window.__ATS_LAST_RECT_SIG__ = sig;
             try { window.atsReportWebviewRect(JSON.stringify(rect)); } catch (_) {}
           }
@@ -1238,18 +1308,44 @@
   function hookShellMetrics() {
     if (isIdeHost()) {
       const wb = document.querySelector('.monaco-workbench');
-      const wv = document.querySelector('iframe.webview');
+      const wv = findAntigravityWebview();
       if (typeof ResizeObserver !== 'undefined') {
         if (!window.__ATS_SHELL_RO__) {
-          window.__ATS_SHELL_RO__ = new ResizeObserver(syncShellMetrics);
-          if (wb) window.__ATS_SHELL_RO__.observe(wb);
+          window.__ATS_SHELL_RO__ = new ResizeObserver(() => syncShellMetrics(false));
+          window.__ATS_OBSERVED_PARTS__ = new WeakSet();
         }
-        if (wv && window.__ATS_WV_EL__ !== wv) {
-          try { window.__ATS_SHELL_RO__.observe(wv); } catch (_) {}
-          window.__ATS_WV_EL__ = wv;
+        const parts = [
+          wb,
+          document.querySelector('.monaco-workbench .part.sidebar'),
+          document.querySelector('.monaco-workbench .part.auxiliarybar'),
+          document.querySelector('.monaco-workbench .part.titlebar'),
+          document.querySelector('.monaco-workbench .part.editor'),
+          wv
+        ];
+        for (const el of parts) {
+          if (el && !window.__ATS_OBSERVED_PARTS__.has(el)) {
+            try {
+              window.__ATS_SHELL_RO__.observe(el);
+              window.__ATS_OBSERVED_PARTS__.add(el);
+            } catch (_) {}
+          }
         }
       }
-      syncShellMetrics();
+      if (wv && window.__ATS_WV_EL__ !== wv) {
+        if (window.__ATS_WV_MO__) {
+          try { window.__ATS_WV_MO__.disconnect(); } catch (_) {}
+        }
+        const mo = new MutationObserver(() => syncShellMetrics(false));
+        try {
+          mo.observe(wv, { attributes: true, attributeFilter: ['style', 'class'] });
+          if (wv.parentElement) {
+            mo.observe(wv.parentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+          }
+        } catch (_) {}
+        window.__ATS_WV_MO__ = mo;
+        window.__ATS_WV_EL__ = wv;
+      }
+      syncShellMetrics(false);
       return;
     }
     const shell = findActiveShell();
@@ -1729,6 +1825,13 @@
   function injectSidebarButton() {
     const existingBtn = document.getElementById('ats-sidebar-btn');
 
+    // Never mount a duplicate sidebar/floating studio button inside IDE's right-hand extensionView iframe
+    if (isExtensionWebview()) {
+      ensureFallbackFab(false);
+      if (existingBtn) existingBtn.remove();
+      return;
+    }
+
     // Antigravity IDE (.monaco-workbench): mount cleanly inside the Status Bar (zero innerHTML for TrustedTypes)
     if (isIdeHost()) {
       if (existingBtn && existingBtn.isConnected) {
@@ -1994,11 +2097,15 @@
         const name = btn.dataset.preset;
         const p = PRESETS[name];
         if (!p) return;
+        const hasCustomImage = state.mode === 'image' && Boolean(state.activeImage);
+        const hasCustomVideo = state.mode === 'video' && Boolean(state.activeVideo) && !/^assets\//i.test(state.activeVideo);
+        const nextMode = (hasCustomImage || hasCustomVideo) ? state.mode : (p.mode || state.mode);
+        const nextVideo = hasCustomVideo ? state.activeVideo : (p.wallpaperVideo || state.activeVideo);
         saveState({
           preset: name,
           bubblePreset: name,
-          mode: p.mode || state.mode,
-          activeVideo: p.wallpaperVideo || state.activeVideo,
+          mode: nextMode,
+          activeVideo: nextVideo,
           dimOpacity: p.dimOpacity ?? state.dimOpacity,
           primaryOverride: ''
         });
@@ -2670,6 +2777,14 @@
       try { window.__ATS_SHELL_RO__.disconnect(); } catch (_) {}
       window.__ATS_SHELL_RO__ = null;
     }
+    if (window.__ATS_WV_MO__) {
+      try { window.__ATS_WV_MO__.disconnect(); } catch (_) {}
+      window.__ATS_WV_MO__ = null;
+    }
+    window.__ATS_OBSERVED_PARTS__ = null;
+    window.__ATS_WV_EL__ = null;
+    window.__ATS_LAST_RECT_SIG__ = '';
+    window.__ATS_EXT_RECT__ = null;
     if (window.__ATS_EVENT_AC__) {
       try { window.__ATS_EVENT_AC__.abort(); } catch (_) {}
       window.__ATS_EVENT_AC__ = null;
@@ -2685,7 +2800,15 @@
       if (el) el.remove();
     });
 
-    document.body.classList.remove('ats-active', 'ats-ide-active');
+    document.body.classList.remove('ats-active', 'ats-ide-active', 'ats-ext-webview');
+    const rootStyle = document.documentElement && document.documentElement.style;
+    if (rootStyle) {
+      [
+        '--ats-primary', '--ats-secondary', '--ats-glow', '--ats-border-color',
+        '--ats-modal-bg', '--ats-modal-header-bg', '--ats-card-bg', '--ats-card-selected-bg',
+        '--ats-ext-parent-w', '--ats-ext-parent-h', '--ats-ext-top', '--ats-ext-left', '--ats-ext-right'
+      ].forEach((prop) => rootStyle.removeProperty(prop));
+    }
     document.querySelectorAll('[data-ats-greeting]').forEach((el) => {
       el.removeAttribute('data-ats-greeting');
       delete el.dataset.atsGreetingOrig;
@@ -2746,6 +2869,13 @@
       try { window.__ATS_SHELL_RO__.disconnect(); } catch (_) {}
       window.__ATS_SHELL_RO__ = null;
     }
+    if (window.__ATS_WV_MO__) {
+      try { window.__ATS_WV_MO__.disconnect(); } catch (_) {}
+      window.__ATS_WV_MO__ = null;
+    }
+    window.__ATS_OBSERVED_PARTS__ = null;
+    window.__ATS_WV_EL__ = null;
+    window.__ATS_LAST_RECT_SIG__ = '';
     if (window.__ATS_EVENT_AC__) {
       try { window.__ATS_EVENT_AC__.abort(); } catch (_) {}
     }
@@ -2760,6 +2890,9 @@
     window.addEventListener('keydown', (e) => {
       if (e.ctrlKey && e.shiftKey && String(e.key || '').toLowerCase() === 't') {
         e.preventDefault();
+        if (isExtensionWebview() && typeof window.atsOpenStudio === 'function') {
+          try { window.atsOpenStudio('toggle'); return; } catch (_) {}
+        }
         const backdrop = document.getElementById('ats-modal-backdrop');
         if (backdrop && backdrop.classList.contains('open')) closeStudioModal();
         else openStudioModal();
@@ -2782,14 +2915,19 @@
     const syncVideoPlayback = () => {
       const bgVideo = document.getElementById('ats-live-bg-video');
       if (!bgVideo) return;
-      if (document.hidden || !document.hasFocus()) {
+      // In IDE / extensionView split frames, clicking between Editor and Chat fires blur on the other frame;
+      // only pause on document.hidden there so the background video never freezes on one side.
+      const shouldPause = (isIdeHost() || isExtensionWebview())
+        ? document.hidden
+        : (document.hidden || !document.hasFocus());
+      if (shouldPause) {
         if (!bgVideo.paused) bgVideo.pause();
       } else if (state.wpEnabled && state.mode === 'video' && bgVideo.getAttribute('src')) {
         bgVideo.play().catch(() => {});
       }
     };
 
-    window.addEventListener('resize', syncShellMetrics, { passive: true, signal: ac.signal });
+    window.addEventListener('resize', () => syncShellMetrics(false), { passive: true, signal: ac.signal });
     window.addEventListener('focus', () => {
       syncTitleBarOverlay();
       syncVideoPlayback();
@@ -2816,10 +2954,37 @@
     tick();
   }
 
+  function updateConfigFromDaemon(nextCfg) {
+    if (!nextCfg || typeof nextCfg !== 'object') return;
+    window.__ATS_INIT_CONFIG__ = nextCfg;
+    const merged = { ...DEFAULT_STATE, ...state, ...nextCfg };
+    if (!PRESETS[merged.preset]) merged.preset = DEFAULT_PRESET_KEY;
+    if (!PRESETS[merged.bubblePreset]) merged.bubblePreset = merged.preset;
+    if (!INPUT_STYLES[merged.inputStyle]) merged.inputStyle = 'sync';
+    if (!['video', 'image', 'gradient'].includes(merged.mode)) merged.mode = 'video';
+    if (!Array.isArray(merged.customGreetings) || merged.customGreetings.length === 0) {
+      merged.customGreetings = DEFAULT_GREETINGS.slice();
+    }
+    state = merged;
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+    applyTheme();
+    injectSidebarButton();
+    const backdrop = document.getElementById('ats-modal-backdrop');
+    if (backdrop && backdrop.classList.contains('open')) {
+      renderStudioPanels(backdrop);
+    }
+  }
+
   window.__ATS_ENGINE__ = {
-    version: '2.0.0',
+    version: '2.1.0',
     reapply: applyTheme,
-    openStudio: openStudioModal,
+    updateConfig: updateConfigFromDaemon,
+    syncRect: (force = true) => syncShellMetrics(Boolean(force)),
+    openStudio: () => {
+      const backdrop = document.getElementById('ats-modal-backdrop');
+      if (backdrop && backdrop.classList.contains('open')) closeStudioModal();
+      else openStudioModal();
+    },
     playBootHud: () => playBootHud(true),
     testTaskSound: () => playTaskSound(true),
     cleanup

@@ -60,6 +60,7 @@ function removeStartupShortcut() {
         $dirs = @(
           [Environment]::GetFolderPath('Desktop'),
           [Environment]::GetFolderPath('StartMenu'),
+          [Environment]::GetFolderPath('CommonStartMenu'),
           (Join-Path $env:APPDATA 'Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar')
         ) | Where-Object { $_ -and (Test-Path $_) }
         $wsh = New-Object -ComObject WScript.Shell
@@ -67,12 +68,14 @@ function removeStartupShortcut() {
           Get-ChildItem -Path $d -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -in @('Antigravity.lnk', 'Antigravity IDE.lnk', 'Visual Studio Code.lnk') } |
             ForEach-Object {
-              $sc = $wsh.CreateShortcut($_.FullName)
-              if ($sc.Arguments -match '--remote-debugging-port=\\d+') {
-                $sc.Arguments = ($sc.Arguments -replace '\\s*--remote-debugging-port=\\d+', '').Trim()
-                $sc.Save()
-                Write-Output "[uninstall] Đã gỡ cờ CDP khỏi: $($_.FullName)"
-              }
+              try {
+                $sc = $wsh.CreateShortcut($_.FullName)
+                if ($sc.Arguments -match '--remote-debugging-port=\\d+') {
+                  $sc.Arguments = ($sc.Arguments -replace '\\s*--remote-debugging-port=\\d+', '').Trim()
+                  $sc.Save()
+                  Write-Output "[uninstall] Đã gỡ cờ CDP khỏi: $($_.FullName)"
+                }
+              } catch {}
             }
         }
       `;
@@ -103,21 +106,25 @@ function resolveCdpPorts() {
     candidates.push(
       path.join(appData, 'antigravity', 'DevToolsActivePort'),
       path.join(appData, 'Antigravity', 'DevToolsActivePort'),
-      path.join(appData, 'Antigravity IDE', 'DevToolsActivePort')
+      path.join(appData, 'Antigravity IDE', 'DevToolsActivePort'),
+      path.join(appData, 'antigravity-ide', 'DevToolsActivePort'),
+      path.join(appData, 'Code', 'DevToolsActivePort')
     );
   } else if (process.platform === 'darwin') {
     const sup = path.join(home, 'Library', 'Application Support');
     candidates.push(
       path.join(sup, 'antigravity', 'DevToolsActivePort'),
       path.join(sup, 'Antigravity', 'DevToolsActivePort'),
-      path.join(sup, 'Antigravity IDE', 'DevToolsActivePort')
+      path.join(sup, 'Antigravity IDE', 'DevToolsActivePort'),
+      path.join(sup, 'Code', 'DevToolsActivePort')
     );
   } else {
     const xdg = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
     candidates.push(
       path.join(xdg, 'antigravity', 'DevToolsActivePort'),
       path.join(xdg, 'Antigravity', 'DevToolsActivePort'),
-      path.join(xdg, 'Antigravity IDE', 'DevToolsActivePort')
+      path.join(xdg, 'Antigravity IDE', 'DevToolsActivePort'),
+      path.join(xdg, 'Code', 'DevToolsActivePort')
     );
   }
 
