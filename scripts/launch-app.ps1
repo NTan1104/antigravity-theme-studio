@@ -18,24 +18,24 @@ if ($Port -le 0) {
 $AppLabel = if ($Vscode) { 'Visual Studio Code' } elseif ($Ide) { 'Antigravity IDE' } else { 'Antigravity' }
 $ProcName = if ($Vscode) { 'Code' } elseif ($Ide) { 'Antigravity IDE' } else { 'Antigravity' }
 
-# 1. Ensure Theme Studio daemon is running (verify PID belongs to node.exe)
+# 1. Ensure Rust Theme Studio daemon is running
 $DaemonRunning = $false
 if (Test-Path $PidFile) {
     $PidVal = 0
     $RawPid = (Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
     if ([int]::TryParse(($RawPid -as [string]), [ref]$PidVal) -and $PidVal -gt 0) {
         $Proc = Get-Process -Id $PidVal -ErrorAction SilentlyContinue
-        if ($Proc -and $Proc.ProcessName -eq 'node') {
+        if ($Proc -and ($Proc.ProcessName -match '^ats-theme')) {
             $DaemonRunning = $true
         }
     }
 }
 
 if (-not $DaemonRunning) {
-    Write-Host "[launch-app] Daemon chưa chạy, đang khởi động daemon..."
+    Write-Host "[launch-app] Rust daemon chưa chạy, đang khởi động daemon..."
     & powershell -ExecutionPolicy Bypass -File $InstallWin -NoStartup -SkipShortcuts
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Không thể khởi động Theme Studio daemon (exit code $LASTEXITCODE)."
+        Write-Error "Không thể khởi động Theme Studio Rust daemon (exit code $LASTEXITCODE)."
     }
 }
 
@@ -96,4 +96,4 @@ $WmiLaunch = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Argum
 if (-not $WmiLaunch -or $WmiLaunch.ReturnValue -ne 0) {
     Start-Process -FilePath $AppExe -ArgumentList "--remote-debugging-port=$Port"
 }
-Write-Host "[launch-app] Hoàn tất! Theme Studio sẽ tự động áp dụng giao diện sau vài giây."
+Write-Host "[launch-app] Hoàn tất! Theme Studio (Rust Edition) sẽ tự động áp dụng giao diện sau vài giây."

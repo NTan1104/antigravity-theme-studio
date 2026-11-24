@@ -9,10 +9,10 @@
   const BOOT_PLAYED_FLAG = '__atsBootHudPlayed';
 
   const DEFAULT_GREETINGS = [
-    'Chào mừng trở lại! Hôm nay mình build gì đây?',
-    'Hệ thống đã sẵn sàng — bắt đầu vibe code thôi!',
-    'Dark Glass Studio trực tuyến. Sẵn sàng nhận lệnh!',
-    'Một ngày mới, một dự án đỉnh cao mới.'
+    'Chào mừng trở lại, Tân! Hôm nay mình build gì đây?',
+    'Hệ thống đã sẵn sàng, Tân ơi — bắt đầu vibe code thôi!',
+    'Dark Glass Studio trực tuyến. Sẵn sàng nhận lệnh từ Tân!',
+    'Một ngày mới, một dự án đỉnh cao mới cùng Tân!'
   ];
 
   const GREETING_RX = /^(?:Hey\s+[^,]{1,40},\s+what\s+should\s+we\s+build\s+today\??|Good\s+to\s+see\s+you|What\s+(?:should|are)\s+we\s+build(?:ing)?\s+today\??|What\s+can\s+I\s+help\s+you\s+with|How\s+can\s+I\s+help\s+you|Welcome\s+back|Where\s+should\s+we\s+pick\s+up|Ready\s+(?:to\s+build|when\s+you\s+are))/i;
@@ -114,12 +114,16 @@
   function canonicalMediaKey(urlStr) {
     if (!urlStr) return '';
     const s = String(urlStr).trim();
-    const match = s.match(/(?:^|\/)(user_media\/[^?#]+)/i);
+    const match = s.match(/(?:^|\/)((?:user_media|assets)\/[^?#]+)/i);
     if (match) {
+      const full = match[1];
+      const slash = full.indexOf('/');
+      const prefix = full.slice(0, slash + 1).toLowerCase();
+      const rest = full.slice(slash + 1);
       try {
-        return 'user_media/' + decodeURIComponent(match[1].slice('user_media/'.length));
+        return prefix + decodeURIComponent(rest);
       } catch (_) {
-        return match[1];
+        return prefix + rest;
       }
     }
     return s;
@@ -228,7 +232,9 @@
           const sy = Math.max(0, Math.floor((natH - side) / 2));
           ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
           const out = canvas.toDataURL('image/webp', 0.88);
-          callback(out && out.startsWith('data:image/webp') ? out : canvas.toDataURL('image/png'));
+          canvas.width = 0;
+          canvas.height = 0;
+          callback(out && out.startsWith('data:image/webp') ? out : String(reader.result || ''));
         } catch (_) {
           callback(String(reader.result || ''));
         }
@@ -239,59 +245,181 @@
     reader.readAsDataURL(file);
   }
 
+  // Convert large base64 data: URIs into compact ~60-byte blob: Object URLs so Blink never
+  // parses or inherits multi-hundred-KB CSS strings across thousands of DOM nodes.
+  function toShortBlobUrl(uri) {
+    if (!uri || typeof uri !== 'string' || !uri.startsWith('data:') || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+      return uri || '';
+    }
+    const cache = window.__ATS_BLOB_CACHE__ instanceof Map
+      ? window.__ATS_BLOB_CACHE__
+      : (window.__ATS_BLOB_CACHE__ = new Map());
+    const key = `${uri.slice(0, 80)}|${uri.length}|${uri.slice(-24)}`;
+    const existing = cache.get(key);
+    if (existing) return existing;
+    try {
+      const comma = uri.indexOf(',');
+      if (comma === -1) return uri;
+      const meta = uri.slice(5, comma);
+      const dataPart = uri.slice(comma + 1);
+      const mime = (meta.split(';')[0] || 'application/octet-stream').trim();
+      let blob;
+      if (meta.includes(';base64')) {
+        const bin = atob(dataPart);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        blob = new Blob([bytes], { type: mime });
+      } else {
+        blob = new Blob([decodeURIComponent(dataPart)], { type: mime });
+      }
+      const objUrl = URL.createObjectURL(blob);
+      cache.set(key, objUrl);
+      while (cache.size > 16) {
+        const oldestKey = cache.keys().next().value;
+        const oldUrl = cache.get(oldestKey);
+        cache.delete(oldestKey);
+        if (oldUrl && oldUrl.startsWith('blob:')) {
+          try { URL.revokeObjectURL(oldUrl); } catch (_) {}
+        }
+      }
+      return objUrl;
+    } catch (_) {
+      return uri;
+    }
+  }
+
+  const MAX_BLUR_CACHE = 4;
+
+  function putBlurCache(key, val) {
+    const cache = window.__ATS_BLUR_CACHE__ instanceof Map
+      ? window.__ATS_BLUR_CACHE__
+      : (window.__ATS_BLUR_CACHE__ = new Map());
+    if (cache.has(key)) cache.delete(key);
+    cache.set(key, val);
+    while (cache.size > MAX_BLUR_CACHE) {
+      const oldestKey = cache.keys().next().value;
+      const oldVal = cache.get(oldestKey);
+      cache.delete(oldestKey);
+      if (typeof oldVal === 'string' && oldVal.startsWith('blob:')) {
+        try { URL.revokeObjectURL(oldVal); } catch (_) {}
+      }
+    }
+  }
+
+  // Dedicated <style id="ats-metrics-style"> keeps clip-path & glass texture off .agy-shell inline styles
+  // so Blink never triggers a full subtree style recalculation when resizing or opening panels.
+  function flushMetricsStyle() {
+    const ms = window.__ATS_METRICS_STATE__ || (window.__ATS_METRICS_STATE__ = {
+      glassBg: '',
+      beforeClip: '',
+      holeClip: ''
+    });
+    let css = '';
+    if (ms.glassBg || ms.beforeClip) {
+      css += '.agy-shell::before{';
+      if (ms.glassBg) css += `background-image:${ms.glassBg}!important;`;
+      if (ms.beforeClip) css += `clip-path:${ms.beforeClip}!important;`;
+      css += '}';
+    }
+    if (ms.holeClip) {
+      css += `body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] > #ats-live-bg-layer{clip-path:${ms.holeClip}!important;}`;
+    }
+    if (css === window.__ATS_LAST_METRICS_CSS__) return;
+    window.__ATS_LAST_METRICS_CSS__ = css;
+    let el = document.getElementById('ats-metrics-style');
+    if (!el) {
+      el = document.createElement('style');
+      el.id = 'ats-metrics-style';
+      document.head.appendChild(el);
+    }
+    el.textContent = css;
+  }
+
   // --------------------------------------------------------------------------
   // 1. Pre-baked L-shaped Unified Glass (Zero Live Backdrop Blur = 60/120 FPS)
   // --------------------------------------------------------------------------
-  function syncPrebakedGlass(wpUrl, overlayRgb, overlayAlpha, tintBg, blurPx) {
-    const shell = findActiveShell();
+  function syncPrebakedGlass(wpUrl, overlayRgb, overlayAlpha, tintBg, blurPx, deferMs = 0) {
+    if (window.__ATS_BLUR_TIMER__) {
+      clearTimeout(window.__ATS_BLUR_TIMER__);
+      window.__ATS_BLUR_TIMER__ = 0;
+    }
+    const ms = window.__ATS_METRICS_STATE__ || (window.__ATS_METRICS_STATE__ = { glassBg: '', beforeClip: '', holeClip: '' });
     if (!wpUrl) {
-      if (shell) shell.style.removeProperty('--ats-l-glass-bg');
+      ms.glassBg = '';
+      flushMetricsStyle();
       return;
     }
     const key = `${wpUrl.slice(0, 64)}|${wpUrl.length}|${overlayRgb}|${overlayAlpha.toFixed(3)}|${tintBg}|${blurPx}`;
-    window.__ATS_BLUR_CACHE__ = window.__ATS_BLUR_CACHE__ || {};
-    const cached = window.__ATS_BLUR_CACHE__[key];
+    const cache = window.__ATS_BLUR_CACHE__ instanceof Map
+      ? window.__ATS_BLUR_CACHE__
+      : (window.__ATS_BLUR_CACHE__ = new Map());
+    const cached = cache.get(key);
     if (cached) {
-      if (shell) shell.style.setProperty('--ats-l-glass-bg', `url("${cached}")`);
+      putBlurCache(key, cached);
+      ms.glassBg = `url("${cached}")`;
+      flushMetricsStyle();
       return;
     }
 
-    const img = new Image();
-    if (!/^(?:data|blob|file):/i.test(wpUrl)) {
-      img.crossOrigin = 'anonymous';
-    }
-    img.onload = () => {
-      try {
-        const w = 640;
-        const h = Math.max(180, Math.round((img.naturalHeight || 1440) * (w / Math.max(1, img.naturalWidth || 2560))));
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-        const scaledBlur = Math.max(0, Math.min(16, Math.round((Number(blurPx) || 0) * 0.75)));
-        ctx.filter = scaledBlur > 0 ? `blur(${scaledBlur}px)` : 'none';
-        ctx.drawImage(img, -12, -12, w + 24, h + 24);
-        ctx.filter = 'none';
-        ctx.fillStyle = `rgba(${overlayRgb}, ${overlayAlpha})`;
-        ctx.fillRect(0, 0, w, h);
-        if (tintBg) {
-          ctx.fillStyle = tintBg;
+    const gen = (window.__ATS_BLUR_GEN__ = (window.__ATS_BLUR_GEN__ || 0) + 1);
+    const runBake = () => {
+      if (window.__ATS_BLUR_GEN__ !== gen) return;
+      const img = new Image();
+      if (!/^(?:data|blob|file):/i.test(wpUrl)) {
+        img.crossOrigin = 'anonymous';
+      }
+      img.onload = () => {
+        if (window.__ATS_BLUR_GEN__ !== gen) return;
+        try {
+          const w = 640;
+          const h = Math.max(180, Math.round((img.naturalHeight || 1440) * (w / Math.max(1, img.naturalWidth || 2560))));
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          const scaledBlur = Math.max(0, Math.min(16, Math.round((Number(blurPx) || 0) * 0.75)));
+          ctx.filter = scaledBlur > 0 ? `blur(${scaledBlur}px)` : 'none';
+          ctx.drawImage(img, -12, -12, w + 24, h + 24);
+          ctx.filter = 'none';
+          ctx.fillStyle = `rgba(${overlayRgb}, ${overlayAlpha})`;
           ctx.fillRect(0, 0, w, h);
-        }
-        const baked = canvas.toDataURL('image/webp', 0.85);
-        canvas.width = 0;
-        canvas.height = 0;
-
-        const cache = window.__ATS_BLUR_CACHE__;
-        cache[key] = baked;
-        const keys = Object.keys(cache);
-        while (keys.length > 4) delete cache[keys.shift()];
-        const curShell = findActiveShell();
-        if (curShell) curShell.style.setProperty('--ats-l-glass-bg', `url("${baked}")`);
-      } catch (_) {}
+          if (tintBg) {
+            ctx.fillStyle = tintBg;
+            ctx.fillRect(0, 0, w, h);
+          }
+          const applyBakedUrl = (bakedUrl) => {
+            canvas.width = 0;
+            canvas.height = 0;
+            if (!bakedUrl || window.__ATS_BLUR_GEN__ !== gen) {
+              if (bakedUrl && bakedUrl.startsWith('blob:')) {
+                try { URL.revokeObjectURL(bakedUrl); } catch (_) {}
+              }
+              return;
+            }
+            putBlurCache(key, bakedUrl);
+            const curMs = window.__ATS_METRICS_STATE__ || (window.__ATS_METRICS_STATE__ = { glassBg: '', beforeClip: '', holeClip: '' });
+            curMs.glassBg = `url("${bakedUrl}")`;
+            flushMetricsStyle();
+          };
+          if (typeof canvas.toBlob === 'function' && typeof URL.createObjectURL === 'function') {
+            canvas.toBlob((blob) => {
+              if (blob) applyBakedUrl(URL.createObjectURL(blob));
+              else applyBakedUrl(canvas.toDataURL('image/webp', 0.85));
+            }, 'image/webp', 0.85);
+          } else {
+            applyBakedUrl(canvas.toDataURL('image/webp', 0.85));
+          }
+        } catch (_) {}
+      };
+      img.src = wpUrl;
     };
-    img.src = wpUrl;
+
+    if (deferMs > 0) {
+      window.__ATS_BLUR_TIMER__ = setTimeout(runBake, deferMs);
+    } else {
+      runBake();
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -384,8 +512,12 @@
 
     const rawVideo = state.activeVideo || mainTheme.wallpaperVideo || '';
     const rawImage = state.activeImage || mainTheme.wallpaper || '';
-    const videoUrl = (ideMode && window.__ATS_INLINE_VIDEO__) ? window.__ATS_INLINE_VIDEO__ : resolveMediaUrl(rawVideo);
-    const imageUrl = (ideMode && window.__ATS_INLINE_IMAGE__) ? window.__ATS_INLINE_IMAGE__ : resolveMediaUrl(rawImage);
+    const videoUrl = (ideMode && window.__ATS_INLINE_VIDEO__)
+      ? toShortBlobUrl(window.__ATS_INLINE_VIDEO__)
+      : toShortBlobUrl(resolveMediaUrl(rawVideo));
+    const imageUrl = (ideMode && window.__ATS_INLINE_IMAGE__)
+      ? toShortBlobUrl(window.__ATS_INLINE_IMAGE__)
+      : toShortBlobUrl(resolveMediaUrl(rawImage));
 
     if (state.mode === 'video' && videoUrl) {
       layer.classList.remove('ats-bg-hidden');
@@ -418,7 +550,16 @@
               const gctx = c.getContext('2d');
               if (gctx) {
                 gctx.drawImage(videoEl, 0, 0, c.width, c.height);
-                syncPrebakedGlass(c.toDataURL('image/webp', 0.82), overlayRgb, overlayAlpha, mainTheme.headerBg || '', state.glassBlur);
+                const snap = c.toDataURL('image/webp', 0.82);
+                c.width = 0;
+                c.height = 0;
+                window.__ATS_VIDEO_SNAP__ = { url: videoUrl, dataUrl: snap };
+                const liveTheme = PRESETS[state.preset] || PRESETS[DEFAULT_PRESET_KEY] || {};
+                const liveOverlayRgb = liveTheme.overlayRgb || '6, 10, 18';
+                const liveOverlayAlpha = Math.min(0.92, Math.max(0, Number(state.dimOpacity ?? liveTheme.dimOpacity ?? 0.45)));
+                if (!isExtensionWebview() && state.wpEnabled && state.mode === 'video' && liveTheme.unifiedGlass) {
+                  syncPrebakedGlass(snap, liveOverlayRgb, liveOverlayAlpha, liveTheme.headerBg || '', state.glassBlur);
+                }
               }
             } catch (_) {}
           };
@@ -429,6 +570,11 @@
             if (isIdeHost()) {
               bgStatusError = true;
               bgStatusText = 'Antigravity IDE không hỗ trợ codec H.264 (.mp4). Hãy dùng video .webm hoặc Ảnh tĩnh (.png/.jpg/.webp) cho bản IDE.';
+              const statusEl = document.getElementById('ats-bg-status');
+              if (statusEl) {
+                statusEl.className = 'ats-status error';
+                statusEl.textContent = bgStatusText;
+              }
             }
             // Graceful fallback: show activeImage if available, otherwise keep pureBg gradient layer visible
             if (imageUrl && imgEl) {
@@ -463,9 +609,15 @@
         }
       }
     } else {
+      // Keep pureBg gradient + scrim visible when wpEnabled is true even if no image/video is picked yet
       releaseVideoDecoder(videoEl);
-      if (imgEl) imgEl.style.display = 'none';
-      layer.classList.add('ats-bg-hidden');
+      if (imgEl) {
+        imgEl.style.display = 'none';
+        imgEl.removeAttribute('src');
+        imgEl.removeAttribute('data-src');
+      }
+      if (scrimEl) scrimEl.style.opacity = '1';
+      layer.classList.remove('ats-bg-hidden');
     }
   }
 
@@ -509,7 +661,7 @@
     el.textContent = STATIC_CSS;
   }
 
-  function applyTheme() {
+  function applyTheme(opts = {}) {
     injectStaticStyles();
 
     const mainTheme = PRESETS[state.preset] || PRESETS[DEFAULT_PRESET_KEY] || {};
@@ -524,12 +676,16 @@
     const isLight = Boolean(mainTheme.isLight);
 
     const ideHost = isIdeHost();
-    const wpImageUrl = (ideHost && window.__ATS_INLINE_IMAGE__)
-      ? window.__ATS_INLINE_IMAGE__
-      : resolveMediaUrl(state.activeImage || mainTheme.wallpaper || '');
-    const wpVideoUrl = (ideHost && window.__ATS_INLINE_VIDEO__)
-      ? window.__ATS_INLINE_VIDEO__
-      : resolveMediaUrl(state.activeVideo || mainTheme.wallpaperVideo || '');
+    const wpImageUrl = toShortBlobUrl(
+      (ideHost && window.__ATS_INLINE_IMAGE__)
+        ? window.__ATS_INLINE_IMAGE__
+        : resolveMediaUrl(state.activeImage || mainTheme.wallpaper || '')
+    );
+    const wpVideoUrl = toShortBlobUrl(
+      (ideHost && window.__ATS_INLINE_VIDEO__)
+        ? window.__ATS_INLINE_VIDEO__
+        : resolveMediaUrl(state.activeVideo || mainTheme.wallpaperVideo || '')
+    );
     const isVideoMode = Boolean(state.wpEnabled && state.mode === 'video' && wpVideoUrl);
     const isImageMode = Boolean(state.wpEnabled && state.mode === 'image' && wpImageUrl);
 
@@ -543,14 +699,144 @@
     root.style.setProperty('--ats-card-bg', mainTheme.cardBg || 'rgba(13, 19, 34, 0.82)');
     root.style.setProperty('--ats-card-selected-bg', mainTheme.cardSelectedBg || 'rgba(22, 38, 66, 0.78)');
 
-    const uiInk = isLight ? '#0f172a' : 'rgba(248, 250, 252, 0.96)';
-    const uiMutedInk = isLight ? '#334155' : 'rgba(226, 232, 240, 0.86)';
+    const uiInk = mainTheme.uiTextColor || (isLight ? '#0f172a' : 'rgba(248, 250, 252, 0.96)');
+    const uiMutedInk = mainTheme.uiMutedColor || (isLight ? '#334155' : 'rgba(226, 232, 240, 0.86)');
     const uiShadow = isLight ? 'none' : '0 1px 4px rgba(0, 0, 0, 0.88)';
-    const pillBg = isLight ? 'rgba(255, 255, 255, 0.82)' : 'rgba(8, 13, 28, 0.78)';
-    const pillHoverBg = isLight ? 'rgba(255, 255, 255, 0.96)' : 'rgba(14, 23, 46, 0.92)';
-    const pillText = isLight ? '#0f172a' : '#f8fafc';
-    const pillBorder = isLight ? 'rgba(15, 23, 42, 0.16)' : 'rgba(255, 255, 255, 0.16)';
+    const pillBg = mainTheme.pillBg || (isLight ? 'rgba(255, 255, 255, 0.82)' : 'rgba(8, 13, 28, 0.78)');
+    const pillHoverBg = mainTheme.pillHoverBg || (isLight ? 'rgba(255, 255, 255, 0.96)' : 'rgba(14, 23, 46, 0.92)');
+    const pillText = mainTheme.pillTextColor || (isLight ? '#0f172a' : '#f8fafc');
+    const pillBorder = mainTheme.pillBorder || (isLight ? 'rgba(15, 23, 42, 0.16)' : 'rgba(255, 255, 255, 0.16)');
     const preCodeBg = isLight ? `rgba(${overlayRgb}, 0.78)` : `rgba(${overlayRgb}, 0.56)`;
+
+    const defaultCornerSvg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Cpath d='M2 20 L2 6 Q2 2 6 2 L20 2' stroke='%23fbbf24' stroke-width='1.5' fill='none' opacity='0.65'/%3E%3Ccircle cx='6' cy='6' r='2' fill='%23fbbf24' opacity='0.75'/%3E%3C/svg%3E";
+    const cornerFiligreeUrl = (bubbleTheme.cornerSvg || bubbleTheme.isOrnament)
+      ? toShortBlobUrl(bubbleTheme.cornerSvg || defaultCornerSvg)
+      : '';
+    const stickerUrl = toShortBlobUrl(bubbleTheme.sticker || '');
+    const stickerTop = Number.isFinite(Number(bubbleTheme.stickerTop)) ? Number(bubbleTheme.stickerTop) : -15;
+    const stickerRight = Number.isFinite(Number(bubbleTheme.stickerRight)) ? Number(bubbleTheme.stickerRight) : 14;
+    const stickerW = Number.isFinite(Number(bubbleTheme.stickerW)) ? Number(bubbleTheme.stickerW) : 96;
+    const stickerH = Number.isFinite(Number(bubbleTheme.stickerH)) ? Number(bubbleTheme.stickerH) : 30;
+
+    const bubbleCornerCss = cornerFiligreeUrl ? `
+      .agy-user-bubble-frame::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: ${bubbleTheme.isOrnament ? '16px' : '14px'};
+        height: ${bubbleTheme.isOrnament ? '16px' : '14px'};
+        background-image: url("${cornerFiligreeUrl}");
+        background-size: contain;
+        background-repeat: no-repeat;
+        pointer-events: none;
+        opacity: ${bubbleTheme.isOrnament ? '0.85' : '0.65'};
+      }
+    ` : `
+      .agy-user-bubble-frame::after { display: none !important; }
+    `;
+
+    const bubbleStickerCss = stickerUrl ? (bubbleTheme.isOrnament ? `
+      .group\\/user-input-step {
+        padding-top: 18px !important;
+      }
+      .agy-user-bubble-frame::before {
+        content: "";
+        position: absolute;
+        top: ${stickerTop}px;
+        right: ${stickerRight}px;
+        width: ${stickerW}px;
+        height: ${stickerH}px;
+        background-image: url("${stickerUrl}");
+        background-size: contain;
+        background-position: center;
+        background-repeat: no-repeat;
+        z-index: 25;
+        pointer-events: none;
+      }
+    ` : `
+      .group\\/user-input-step {
+        padding-top: ${Math.max(36, Math.abs(stickerTop) + 8)}px !important;
+      }
+      .agy-user-bubble-frame::before {
+        content: "";
+        position: absolute;
+        top: ${stickerTop}px;
+        right: ${stickerRight}px;
+        width: ${stickerW}px;
+        height: ${stickerH}px;
+        background-image: url("${stickerUrl}");
+        background-size: contain;
+        background-position: bottom center;
+        background-repeat: no-repeat;
+        z-index: 25;
+        pointer-events: none;
+      }
+    `) : `
+      .agy-user-bubble-frame::before { display: none !important; }
+    `;
+
+    const showInputSticker = state.inputStyle !== 'minimal' && Boolean(stickerUrl);
+    const inputStickerCss = showInputSticker ? (bubbleTheme.isOrnament ? `
+      .surface-composer {
+        margin-top: 16px !important;
+        overflow: visible !important;
+      }
+      .surface-composer::before {
+        content: "";
+        position: absolute;
+        top: ${stickerTop}px;
+        right: 16px;
+        width: ${stickerW + 8}px;
+        height: ${stickerH + 2}px;
+        background-image: url("${stickerUrl}");
+        background-size: contain;
+        background-position: center;
+        background-repeat: no-repeat;
+        z-index: 30;
+        pointer-events: none;
+      }
+      ${cornerFiligreeUrl ? `
+      .surface-composer::after {
+        content: "";
+        position: absolute;
+        bottom: 3px;
+        left: 4px;
+        width: 16px;
+        height: 16px;
+        background-image: url("${cornerFiligreeUrl}");
+        background-size: contain;
+        background-repeat: no-repeat;
+        transform: rotate(180deg);
+        z-index: 25;
+        pointer-events: none;
+        opacity: 0.78;
+      }
+      ` : '.surface-composer::after { display: none !important; }'}
+    ` : `
+      .surface-composer {
+        margin-top: 28px !important;
+        overflow: visible !important;
+      }
+      .surface-composer::before {
+        content: "";
+        position: absolute;
+        top: ${stickerTop - 4}px;
+        right: 16px;
+        width: ${stickerW + 6}px;
+        height: ${stickerH + 6}px;
+        background-image: url("${stickerUrl}");
+        background-size: contain;
+        background-position: bottom center;
+        background-repeat: no-repeat;
+        z-index: 30;
+        pointer-events: none;
+      }
+      .surface-composer::after { display: none !important; }
+    `) : `
+      .surface-composer::before,
+      .surface-composer::after { display: none !important; }
+    `;
 
     const extWebview = isExtensionWebview();
     if (extWebview) {
@@ -576,8 +862,13 @@
 
     const useUnifiedGlass = Boolean(!extWebview && state.wpEnabled && mainTheme.unifiedGlass && (isVideoMode || isImageMode));
     if (useUnifiedGlass && isImageMode) {
-      syncPrebakedGlass(wpImageUrl, overlayRgb, overlayAlpha, mainTheme.headerBg || '', state.glassBlur);
-    } else if (!useUnifiedGlass || !isVideoMode) {
+      syncPrebakedGlass(wpImageUrl, overlayRgb, overlayAlpha, mainTheme.headerBg || '', state.glassBlur, opts.debounceBlur ? 80 : 0);
+    } else if (useUnifiedGlass && isVideoMode) {
+      const snap = window.__ATS_VIDEO_SNAP__;
+      if (snap && snap.url === wpVideoUrl && snap.dataUrl) {
+        syncPrebakedGlass(snap.dataUrl, overlayRgb, overlayAlpha, mainTheme.headerBg || '', state.glassBlur, opts.debounceBlur ? 80 : 0);
+      }
+    } else {
       syncPrebakedGlass(null);
     }
 
@@ -605,9 +896,11 @@
     const avSize = Math.min(52, Math.max(22, Number(state.avatarSize) || 32));
     const avAgentSize = Math.max(22, avSize - 2);
     const avRadius = Math.min(50, Math.max(0, Number.isFinite(Number(state.avatarRadius)) ? Number(state.avatarRadius) : 50));
+    const effUserAvatar = toShortBlobUrl(state.userAvatar);
+    const effAgentAvatar = toShortBlobUrl(state.agentAvatar);
 
     const avatarCss = `
-      ${state.userAvatar ? `
+      ${effUserAvatar ? `
       .agy-shell [data-testid="user-message"] {
         position: relative !important;
         padding-right: ${avSize + 10}px !important;
@@ -620,14 +913,14 @@
         width: ${avSize}px;
         height: ${avSize}px;
         border-radius: ${avRadius}%;
-        background-image: url("${sanitizeCssUrl(state.userAvatar)}");
+        background-image: url("${sanitizeCssUrl(effUserAvatar)}");
         background-size: cover;
         background-position: center;
         border: 1.5px solid ${primary};
         box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4), 0 0 8px ${glow};
         pointer-events: none;
       }` : ''}
-      ${state.agentAvatar ? `
+      ${effAgentAvatar ? `
       .agy-shell [data-testid="agent-response"] {
         position: relative !important;
         padding-left: ${avAgentSize + 22}px !important;
@@ -641,7 +934,7 @@
         width: ${avAgentSize}px;
         height: ${avAgentSize}px;
         border-radius: ${avRadius}%;
-        background-image: url("${sanitizeCssUrl(state.agentAvatar)}");
+        background-image: url("${sanitizeCssUrl(effAgentAvatar)}");
         background-size: cover;
         background-position: center;
         border: 1.5px solid ${secondary};
@@ -692,9 +985,6 @@
         background-image: none !important;
       }
       /* Split-browser hole cutout so live BrowserView & its close/URL bar are never covered */
-      body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] > #ats-live-bg-layer {
-        clip-path: var(--ats-hole-clip, none) !important;
-      }
       body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] > :not([data-has-browser-hole="true"]):not([data-browser-hole]:not([data-browser-hole="false"])):not(.settings-modal-container),
       body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] .browser-hole-opaque:not([data-has-browser-hole="true"]),
       body[data-has-browser-hole="true"] .agy-shell[data-ats-hole-active="1"] [data-pane-id]:not([data-has-browser-hole="true"]),
@@ -768,7 +1058,7 @@
         transition: opacity 0.25s ease;
       }
 
-      /* Unified L-shaped Glass for Header + Sidebar (Zero live backdrop-filter) */
+      /* Unified L-shaped Glass for Header + Sidebar (Zero live backdrop-filter, clip-path driven via #ats-metrics-style) */
       ${useUnifiedGlass ? `
       .agy-shell::before {
         content: "";
@@ -777,42 +1067,18 @@
         z-index: 1;
         pointer-events: none;
         background-color: ${isVideoMode ? (mainTheme.sidebarBg || 'rgba(8, 12, 22, 0.32)') : (mainTheme.headerBg || 'rgba(8, 12, 22, 0.30)')};
-        background-image: ${isVideoMode ? 'none' : 'var(--ats-l-glass-bg, none)'};
+        background-image: none;
         background-size: cover;
         background-position: ${bgPosition};
         background-repeat: no-repeat;
         backdrop-filter: none !important;
         will-change: transform;
-        clip-path: polygon(
-          0 0,
-          100% 0,
-          100% var(--ats-hdr-h, 75px),
-          var(--ats-sidebar-w, 256px) var(--ats-hdr-h, 75px),
-          var(--ats-sidebar-w, 256px) 100%,
-          0 100%
-        );
-      }
-      .agy-shell[data-ats-side-glass="1"]::before {
-        clip-path: polygon(
-          evenodd,
-          0 0,
-          100% 0,
-          100% var(--ats-hdr-h, 75px),
-          var(--ats-sidebar-w, 256px) var(--ats-hdr-h, 75px),
-          var(--ats-sidebar-w, 256px) 100%,
-          0 100%,
-          0 0,
-          var(--ats-side-l, 100%) var(--ats-side-t, 75px),
-          var(--ats-side-r, 100%) var(--ats-side-t, 75px),
-          var(--ats-side-r, 100%) var(--ats-side-b, 100%),
-          var(--ats-side-l, 100%) var(--ats-side-b, 100%),
-          var(--ats-side-l, 100%) var(--ats-side-t, 75px)
-        ) !important;
+        clip-path: polygon(0 0, 100% 0, 100% 75px, 256px 75px, 256px 100%, 0 100%);
       }
       .agy-shell [class*="@container/titlebar"],
       .agy-shell aside,
       .agy-shell [data-sidebar="true"],
-      .agy-shell .bg-sidebar {
+      .agy-shell .bg-sidebar:not(.surface-opaque) {
         background: transparent !important;
         backdrop-filter: none !important;
       }
@@ -823,11 +1089,20 @@
       }
       .agy-shell aside,
       .agy-shell [data-sidebar="true"],
-      .agy-shell .bg-sidebar {
+      .agy-shell .bg-sidebar:not(.surface-opaque) {
         background: ${mainTheme.sidebarBg || 'rgba(8, 12, 22, 0.62)'} !important;
         backdrop-filter: none !important;
       }
       `}
+
+      /* Keep floating menubar dropdowns & opaque popovers readable */
+      .agy-shell .surface-opaque.bg-sidebar,
+      .agy-shell .surface-opaque.border-menu-border {
+        background: ${mainTheme.modalBg || 'rgba(9, 13, 24, 0.96)'} !important;
+        border-color: ${borderColor} !important;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, ${isLight ? '0.18' : '0.65'}) !important;
+        backdrop-filter: none !important;
+      }
 
       .agy-shell [class*="@container/titlebar"] {
         border-bottom: 1px solid ${mainTheme.headerBorder || 'rgba(56, 189, 248, 0.14)'} !important;
@@ -838,12 +1113,18 @@
         color: ${uiInk} !important;
         text-shadow: ${uiShadow};
       }
-      .agy-shell .bg-sidebar .bg-sidebar,
-      .agy-shell [data-sidebar="true"] .bg-sidebar,
-      .agy-shell .bg-sidebar [class*="group/headerbtn"],
-      .agy-shell .bg-sidebar [class*="group/section-header"] {
+      .agy-shell .bg-sidebar:not(.surface-opaque) .bg-sidebar:not(.surface-opaque),
+      .agy-shell [data-sidebar="true"] .bg-sidebar:not(.surface-opaque),
+      .agy-shell .bg-sidebar:not(.surface-opaque) [class*="group/headerbtn"],
+      .agy-shell .bg-sidebar:not(.surface-opaque) [class*="group/section-header"] {
         background: transparent !important;
         backdrop-filter: none !important;
+      }
+      /* Hide sticky sidebar section headers smoothly while scrolled */
+      .agy-shell .bg-sidebar .ats-scrolled > .w-full.relative > .bg-sidebar[style*="position: sticky"] {
+        opacity: 0 !important;
+        pointer-events: none !important;
+        transition: opacity 0.14s ease !important;
       }
       .agy-shell .bg-sidebar [class*="group/headerbtn"]:hover,
       .agy-shell .bg-sidebar a:hover {
@@ -861,7 +1142,7 @@
         color: ${uiMutedInk} !important;
       }` : ''}
 
-      /* Agent Response Reading Card + Markdown Table Scroll Safety */
+      /* Agent Response Reading Card + Markdown Table & KaTeX Scroll Safety (Zero :has() selectors) */
       .agy-shell [data-testid="agent-response"] {
         background: ${mainTheme.aiCardBg || 'rgba(9, 14, 26, 0.70)'} !important;
         ${isLight ? `color: ${uiInk} !important;` : ''}
@@ -869,7 +1150,7 @@
         border: 1px solid ${mainTheme.aiCardBorder || 'rgba(148, 163, 184, 0.18)'} !important;
         border-radius: 14px !important;
         padding: 12px 16px !important;
-        box-shadow: ${isLight ? '0 4px 14px rgba(15, 23, 42, 0.08)' : '0 4px 16px rgba(0, 0, 0, 0.32)'} !important;
+        box-shadow: none !important;
         box-sizing: border-box !important;
         overflow: hidden !important;
       }
@@ -881,27 +1162,73 @@
       .agy-shell [data-testid="agent-response"] .md-table-bleed,
       .agy-shell [data-testid="agent-response"] .md-table-host {
         width: 100% !important;
+        min-width: 0 !important;
         max-width: 100% !important;
         margin-inline: 0 !important;
         transform: none !important;
+        box-sizing: border-box !important;
       }
-      .agy-shell [data-testid="agent-response"] .md-table-scroll,
-      .agy-shell [data-testid="agent-response"] :has(> table):not(.md-table-frame) {
+      .agy-shell [data-testid="agent-response"] .md-table-scroll {
         display: block !important;
         width: 100% !important;
+        min-width: 0 !important;
         max-width: 100% !important;
         overflow-x: auto !important;
         overflow-y: hidden !important;
+        padding-bottom: 2px !important;
+        box-sizing: border-box !important;
+        scrollbar-width: auto !important;
+        scrollbar-color: auto !important;
+      }
+      .agy-shell [data-testid="agent-response"] .md-table-frame {
+        width: fit-content !important;
+        min-width: 100% !important;
+        max-width: none !important;
+        margin: 0 !important;
+        transform: none !important;
+        box-sizing: border-box !important;
+      }
+      .agy-shell [data-testid="agent-response"] :is(.md-math-display, .katex-display) {
+        display: block !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: 100% !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        padding-bottom: 4px !important;
+        box-sizing: border-box !important;
+        scrollbar-width: auto !important;
+        scrollbar-color: auto !important;
+      }
+      .agy-shell [data-testid="agent-response"] :not(.md-math-display):not(.katex-display) > .katex {
+        display: inline-block !important;
+        max-width: 100% !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        vertical-align: middle !important;
+        box-sizing: border-box !important;
+      }
+      .agy-shell [data-testid="agent-response"] :is(.md-table-scroll, .md-math-display, .katex-display, :not(.md-math-display):not(.katex-display) > .katex)::-webkit-scrollbar {
+        height: 8px !important;
+        display: block !important;
+      }
+      .agy-shell [data-testid="agent-response"] :is(.md-table-scroll, .md-math-display, .katex-display, :not(.md-math-display):not(.katex-display) > .katex)::-webkit-scrollbar-track {
+        background: ${isLight ? 'rgba(15, 23, 42, 0.06)' : 'rgba(255, 255, 255, 0.06)'} !important;
+        border-radius: 9999px !important;
+      }
+      .agy-shell [data-testid="agent-response"] :is(.md-table-scroll, .md-math-display, .katex-display, :not(.md-math-display):not(.katex-display) > .katex)::-webkit-scrollbar-thumb {
+        background: ${isLight ? 'rgba(15, 23, 42, 0.34)' : 'rgba(148, 163, 184, 0.48)'} !important;
+        border-radius: 9999px !important;
       }
 
-      /* Right-side Artifact / Diff Panel */
-      body:not([data-has-browser-hole="true"]) .agy-shell [data-side-panel-body="true"]:not([data-has-browser-hole="true"]):not(:has([data-browser-hole]:not([data-browser-hole="false"]))) {
+      /* Right-side Artifact / Diff Panel (Zero :has() selectors) */
+      body:not([data-has-browser-hole="true"]) .agy-shell [data-side-panel-body="true"]:not([data-has-browser-hole="true"]) {
         background: ${mainTheme.aiCardBg || `rgba(${overlayRgb}, 0.72)`} !important;
         ${isLight ? `color: ${uiInk} !important;` : ''}
         backdrop-filter: none !important;
         border-left: 1px solid ${mainTheme.aiCardBorder || 'rgba(148, 163, 184, 0.16)'} !important;
       }
-      body:not([data-has-browser-hole="true"]) .agy-shell [data-side-panel-body="true"] pre {
+      body:not([data-has-browser-hole="true"]) .agy-shell [data-side-panel-body="true"]:not([data-has-browser-hole="true"]) pre {
         background: ${preCodeBg} !important;
         border-radius: 10px !important;
       }
@@ -911,6 +1238,8 @@
         background: ${bubbleFrameBg} !important;
         border-radius: 14px !important;
         box-shadow: 0 4px 18px rgba(0, 0, 0, 0.42), 0 0 12px ${bubbleTheme.glow || glow} !important;
+        position: relative !important;
+        overflow: visible !important;
         padding: 1.2px !important;
       }
       .agy-user-bubble {
@@ -919,6 +1248,7 @@
         padding: 8px 16px !important;
         color: ${bubbleTheme.textColor || '#f8fafc'} !important;
         border: ${bubbleTheme.innerBorder || '1px solid rgba(255, 255, 255, 0.08)'} !important;
+        overflow: visible !important;
       }
       .agy-user-bubble * {
         color: ${bubbleTheme.textColor || '#f8fafc'} !important;
@@ -930,6 +1260,7 @@
         border-radius: 16px !important;
         padding: 1.5px !important;
         box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), 0 0 14px ${glow} !important;
+        position: relative !important;
       }
       .surface-composer-card {
         background: ${inputCardBg} !important;
@@ -937,6 +1268,10 @@
         border-radius: 14.5px !important;
         border: ${bubbleTheme.innerBorder || '1px solid rgba(255, 255, 255, 0.08)'} !important;
       }
+
+      ${bubbleCornerCss}
+      ${bubbleStickerCss}
+      ${inputStickerCss}
 
       /* High-Contrast Composer Pills (Adaptive Light / Dark) */
       .surface-composer [data-testid="project-selector-trigger"],
@@ -1244,6 +1579,12 @@
     }
     const shell = findActiveShell();
     if (!shell) return;
+    const ms = window.__ATS_METRICS_STATE__ || (window.__ATS_METRICS_STATE__ = {
+      glassBg: '',
+      beforeClip: '',
+      holeClip: ''
+    });
+
     const split = shell.querySelector('[data-testid="sidebar-split"]');
     const sidebarPane = split ? split.firstElementChild : null;
     const titleBar = shell.querySelector('[class*="@container/titlebar"]');
@@ -1251,8 +1592,7 @@
     const shellRect = shell.getBoundingClientRect();
     const hdrBottom = titleBar ? Math.round(titleBar.getBoundingClientRect().bottom - shellRect.top) : 35;
 
-    shell.style.setProperty('--ats-sidebar-w', `${sw}px`);
-    shell.style.setProperty('--ats-hdr-h', `${hdrBottom}px`);
+    const baseLClip = `polygon(0 0, 100% 0, 100% ${hdrBottom}px, ${sw}px ${hdrBottom}px, ${sw}px 100%, 0 100%)`;
 
     const hasHoleAttr = document.body.getAttribute('data-has-browser-hole') === 'true';
     const holeEl = hasHoleAttr ? shell.querySelector('[data-browser-hole]:not([data-browser-hole="false"])') : null;
@@ -1267,18 +1607,20 @@
         const t = Math.max(0, Math.round(hRect.top - shellRect.top));
         const r = Math.max(l, Math.round(hRect.right - shellRect.left));
         const b = Math.max(t, Math.round(hRect.bottom - shellRect.top));
-        shell.style.setProperty(
-          '--ats-hole-clip',
-          `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${l}px ${t}px, ${r}px ${t}px, ${r}px ${b}px, ${l}px ${b}px, ${l}px ${t}px)`
-        );
-        shell.dataset.atsHoleActive = '1';
-        delete shell.dataset.atsSideGlass;
+        ms.beforeClip = baseLClip;
+        ms.holeClip = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${l}px ${t}px, ${r}px ${t}px, ${r}px ${b}px, ${l}px ${b}px, ${l}px ${t}px)`;
+        if (shell.dataset.atsHoleActive !== '1') {
+          shell.dataset.atsHoleActive = '1';
+        }
+        flushMetricsStyle();
         return;
       }
     }
     window.__ATS_HOLE_EL__ = null;
-    delete shell.dataset.atsHoleActive;
-    shell.style.removeProperty('--ats-hole-clip');
+    if (shell.dataset.atsHoleActive) {
+      delete shell.dataset.atsHoleActive;
+    }
+    ms.holeClip = '';
 
     const sideBody = shell.querySelector('[data-side-panel-body="true"]');
     if (sideBody) {
@@ -1287,32 +1629,42 @@
         window.__ATS_SIDE_EL__ = sideBody;
       }
       const sRect = sideBody.getBoundingClientRect();
-      if (sideBody.children.length > 0 && sRect.width > 24 && sRect.height > 24) {
+      if (sideBody.children.length > 0 && sRect.width > 24 && sRect.height > 24 && sRect.left < shellRect.right - 8 && sRect.right > shellRect.left + 8) {
         const sl = Math.max(sw, Math.round(sRect.left - shellRect.left));
         const st = Math.max(hdrBottom, Math.round(sRect.top - shellRect.top));
         const sr = Math.min(Math.round(shellRect.width), Math.max(sl, Math.round(sRect.right - shellRect.left)));
         const sb = Math.min(Math.round(shellRect.height), Math.max(st, Math.round(sRect.bottom - shellRect.top)));
         if (sr - sl > 20 && sb - st > 20) {
-          shell.style.setProperty('--ats-side-l', `${sl}px`);
-          shell.style.setProperty('--ats-side-t', `${st}px`);
-          shell.style.setProperty('--ats-side-r', `${sr}px`);
-          shell.style.setProperty('--ats-side-b', `${sb}px`);
-          shell.dataset.atsSideGlass = '1';
+          ms.beforeClip = `polygon(evenodd, 0 0, 100% 0, 100% ${hdrBottom}px, ${sw}px ${hdrBottom}px, ${sw}px 100%, 0 100%, 0 0, ${sl}px ${st}px, ${sr}px ${st}px, ${sr}px ${sb}px, ${sl}px ${sb}px, ${sl}px ${st}px)`;
+          flushMetricsStyle();
           return;
         }
       }
+    } else {
+      window.__ATS_SIDE_EL__ = null;
     }
-    delete shell.dataset.atsSideGlass;
+    ms.beforeClip = baseLClip;
+    flushMetricsStyle();
   }
 
-  function hookShellMetrics() {
+  function scheduleMetricsSync() {
+    if (window.__ATS_METRICS_RAF__) return;
+    window.__ATS_METRICS_RAF__ = requestAnimationFrame(() => {
+      window.__ATS_METRICS_RAF__ = 0;
+      syncShellMetrics(false);
+    });
+  }
+
+  function hookShellMetrics(forceSync = false) {
     if (isIdeHost()) {
+      let needsIdeSync = forceSync;
       const wb = document.querySelector('.monaco-workbench');
       const wv = findAntigravityWebview();
       if (typeof ResizeObserver !== 'undefined') {
         if (!window.__ATS_SHELL_RO__) {
-          window.__ATS_SHELL_RO__ = new ResizeObserver(() => syncShellMetrics(false));
+          window.__ATS_SHELL_RO__ = new ResizeObserver(scheduleMetricsSync);
           window.__ATS_OBSERVED_PARTS__ = new WeakSet();
+          needsIdeSync = true;
         }
         const parts = [
           wb,
@@ -1327,6 +1679,7 @@
             try {
               window.__ATS_SHELL_RO__.observe(el);
               window.__ATS_OBSERVED_PARTS__.add(el);
+              needsIdeSync = true;
             } catch (_) {}
           }
         }
@@ -1335,7 +1688,7 @@
         if (window.__ATS_WV_MO__) {
           try { window.__ATS_WV_MO__.disconnect(); } catch (_) {}
         }
-        const mo = new MutationObserver(() => syncShellMetrics(false));
+        const mo = new MutationObserver(scheduleMetricsSync);
         try {
           mo.observe(wv, { attributes: true, attributeFilter: ['style', 'class'] });
           if (wv.parentElement) {
@@ -1344,20 +1697,51 @@
         } catch (_) {}
         window.__ATS_WV_MO__ = mo;
         window.__ATS_WV_EL__ = wv;
+        needsIdeSync = true;
       }
-      syncShellMetrics(false);
+      if (needsIdeSync) {
+        syncShellMetrics(false);
+      }
       return;
     }
     const shell = findActiveShell();
     if (!shell) return;
+    let needsSync = forceSync;
+    if (!shell.dataset.atsTboMounted) {
+      shell.dataset.atsTboMounted = '1';
+      if (shell.dataset.atsSideGlass) delete shell.dataset.atsSideGlass;
+      ['--ats-hole-clip', '--ats-l-glass-bg', '--ats-sidebar-w', '--ats-hdr-h', '--ats-side-l', '--ats-side-t', '--ats-side-r', '--ats-side-b'].forEach((p) => {
+        if (shell.style.getPropertyValue(p)) shell.style.removeProperty(p);
+      });
+      flushMetricsStyle();
+      scheduleTitleBarSync();
+      needsSync = true;
+    }
     if (!window.__ATS_SHELL_RO__ && typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(syncShellMetrics);
+      const ro = new ResizeObserver(scheduleMetricsSync);
       ro.observe(shell);
       const sidebarPane = shell.querySelector('[data-testid="sidebar-split"]')?.firstElementChild;
       if (sidebarPane) ro.observe(sidebarPane);
       window.__ATS_SHELL_RO__ = ro;
+      needsSync = true;
     }
-    syncShellMetrics();
+    if (!needsSync) {
+      const hasHoleAttr = document.body.getAttribute('data-has-browser-hole') === 'true';
+      const holeEl = hasHoleAttr ? shell.querySelector('[data-browser-hole]:not([data-browser-hole="false"])') : null;
+      const sideBody = shell.querySelector('[data-side-panel-body="true"]');
+      const sideHasContent = Boolean(sideBody && sideBody.children.length > 0);
+      if (
+        holeEl !== window.__ATS_HOLE_EL__ ||
+        sideBody !== window.__ATS_SIDE_EL__ ||
+        sideHasContent !== Boolean(window.__ATS_SIDE_HAS_CONTENT__)
+      ) {
+        window.__ATS_SIDE_HAS_CONTENT__ = sideHasContent;
+        needsSync = true;
+      }
+    }
+    if (needsSync) {
+      syncShellMetrics(false);
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -1543,6 +1927,13 @@
     if (root.querySelector('[data-testid="agent-response"], .agy-user-bubble-frame')) {
       window.__ATS_GREETING_FRESH__ = true;
       return;
+    }
+    // Fast-path: if the greeting attribute is already mounted and connected, skip DOM querySelectorAll
+    if (!window.__ATS_GREETING_FRESH__) {
+      const mountedGreeting = root.querySelector('[data-ats-greeting]');
+      if (mountedGreeting && mountedGreeting.isConnected) {
+        return;
+      }
     }
     const candidates = root.querySelectorAll('h1, h2, h3, p, div, span');
     for (let i = 0; i < candidates.length; i++) {
@@ -1765,13 +2156,16 @@
 
   async function deleteMediaFile(fileName, url) {
     const base = getMediaBase();
-    if (!base) return;
+    if (!base) throw new Error('Media server chưa kết nối');
     const res = await fetch(`${base}/api/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fileName, url })
     });
     const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || 'Không thể xóa tệp');
+    }
     if (data && data.media) {
       mediaLibrary = data.media;
       window.__ATS_USER_MEDIA__ = mediaLibrary;
@@ -1779,22 +2173,25 @@
       await fetchMediaLibrary();
     }
 
+    const deletedUrls = [url, ...(Array.isArray(data.deleted) ? data.deleted.map((f) => `user_media/${f}`) : [])].filter(Boolean);
+    const wasDeleted = (currentVal) => Boolean(currentVal && deletedUrls.some((d) => isSameMediaUrl(currentVal, d)));
+
     const patch = {};
-    if (url && isSameMediaUrl(state.activeVideo, url)) {
+    if (wasDeleted(state.activeVideo)) {
       patch.activeVideo = 'assets/wallpaper.mp4';
     }
-    if (url && isSameMediaUrl(state.activeImage, url)) {
+    if (wasDeleted(state.activeImage)) {
       patch.activeImage = '';
       if (state.mode === 'image') patch.mode = 'gradient';
     }
-    if (url && isSameMediaUrl(state.activeAudio, url)) {
+    if (wasDeleted(state.activeAudio)) {
       patch.activeAudio = '';
     }
-    if (url && isSameMediaUrl(state.bootAudio, url)) {
+    if (wasDeleted(state.bootAudio)) {
       patch.bootAudio = '';
     }
     if (Object.keys(patch).length > 0) {
-      saveState(patch);
+      saveState(patch, true);
       applyTheme();
     }
   }
@@ -1977,9 +2374,38 @@
       `);
       document.body.appendChild(backdrop);
 
-      backdrop.addEventListener('click', (e) => {
-        if (e.target === backdrop) closeStudioModal();
+      let backdropMouseDownOnSelf = false;
+      backdrop.addEventListener('pointerdown', (e) => {
+        backdropMouseDownOnSelf = (e.target === backdrop);
       });
+      backdrop.addEventListener('click', (e) => {
+        if (backdropMouseDownOnSelf && e.target === backdrop) {
+          closeStudioModal();
+        }
+        backdropMouseDownOnSelf = false;
+      });
+
+      const modalEl = backdrop.querySelector('#ats-modal');
+      if (modalEl) {
+        ['keydown', 'keyup', 'keypress', 'copy', 'cut', 'paste', 'contextmenu'].forEach((evName) => {
+          modalEl.addEventListener(evName, (e) => {
+            if (evName === 'keydown' && e.key === 'Escape') {
+              e.stopPropagation();
+              closeStudioModal();
+              return;
+            }
+            if (evName === 'keydown' && e.ctrlKey && e.shiftKey && String(e.key || '').toLowerCase() === 't') {
+              e.preventDefault();
+              e.stopPropagation();
+              closeStudioModal();
+              return;
+            }
+            // Stop host app global shortcuts from hijacking typing / Ctrl+C / Ctrl+V inside modal inputs
+            e.stopPropagation();
+          });
+        });
+      }
+
       backdrop.querySelector('.ats-close-btn').addEventListener('click', closeStudioModal);
       backdrop.querySelectorAll('.ats-tab-btn').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -2021,7 +2447,10 @@
       { name: 'wallpaper.mp4 (Mặc định)', url: 'assets/wallpaper.mp4', builtIn: true },
       ...(mediaLibrary.videos || [])
     ];
-    const allImages = [...(mediaLibrary.images || [])];
+    const allImages = [
+      { name: 'wlop_cosmic_2k.webp (WLOP Cosmic)', url: 'assets/wlop_cosmic_2k.webp', builtIn: true },
+      ...(mediaLibrary.images || [])
+    ];
 
     const listItems = state.mode === 'video'
       ? allVideos.map((v) => `
@@ -2038,7 +2467,7 @@
               <img class="ats-media-thumb" loading="lazy" alt="" src="${escapeHtml(resolveMediaUrl(img.url))}" />
               <span class="ats-media-name" title="${escapeHtml(img.name)}">${escapeHtml(img.name)}</span>
               <button type="button" class="ats-btn" data-select-image="${escapeHtml(img.url)}">Chọn</button>
-              <button type="button" class="ats-btn ats-btn-danger" data-del-file="${escapeHtml(img.fileName)}" data-del-url="${escapeHtml(img.url)}">Xóa</button>
+              ${img.builtIn ? '' : `<button type="button" class="ats-btn ats-btn-danger" data-del-file="${escapeHtml(img.fileName)}" data-del-url="${escapeHtml(img.url)}">Xóa</button>`}
             </div>
           `).join('') : '<div class="ats-row-sub">Chưa có ảnh nào. Bấm nút "+ Tải tệp lên" để thêm ảnh nền!</div>')
         : '<div class="ats-row-sub">Đang dùng nền Gradient thuần CSS (tiết kiệm tối đa GPU/RAM).</div>';
@@ -2088,7 +2517,7 @@
     `);
 
     panel.querySelector('#ats-wp-toggle').addEventListener('change', (e) => {
-      saveState({ wpEnabled: e.target.checked });
+      saveState({ wpEnabled: e.target.checked }, true);
       applyTheme();
     });
 
@@ -2097,18 +2526,23 @@
         const name = btn.dataset.preset;
         const p = PRESETS[name];
         if (!p) return;
-        const hasCustomImage = state.mode === 'image' && Boolean(state.activeImage);
+        const hasPresetWallpaper = Boolean(p.wallpaper);
+        const hasCustomImage = state.mode === 'image' && Boolean(state.activeImage) && !/^assets\//i.test(state.activeImage);
         const hasCustomVideo = state.mode === 'video' && Boolean(state.activeVideo) && !/^assets\//i.test(state.activeVideo);
-        const nextMode = (hasCustomImage || hasCustomVideo) ? state.mode : (p.mode || state.mode);
+        const nextMode = hasPresetWallpaper
+          ? 'image'
+          : ((hasCustomImage || hasCustomVideo) ? state.mode : (p.mode || state.mode));
+        const nextImage = hasPresetWallpaper ? '' : state.activeImage;
         const nextVideo = hasCustomVideo ? state.activeVideo : (p.wallpaperVideo || state.activeVideo);
         saveState({
           preset: name,
           bubblePreset: name,
           mode: nextMode,
+          activeImage: nextImage,
           activeVideo: nextVideo,
           dimOpacity: p.dimOpacity ?? state.dimOpacity,
           primaryOverride: ''
-        });
+        }, true);
         applyTheme();
         renderStudioPanels(backdrop);
       });
@@ -2116,7 +2550,7 @@
 
     panel.querySelectorAll('[data-mode]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        saveState({ mode: btn.dataset.mode });
+        saveState({ mode: btn.dataset.mode }, true);
         applyTheme();
         renderBgPanel(panel, backdrop);
       });
@@ -2127,6 +2561,7 @@
     panel.querySelector('#ats-bg-upload-btn').addEventListener('click', () => uploadInput.click());
     uploadInput.addEventListener('change', async () => {
       const file = uploadInput.files && uploadInput.files[0];
+      uploadInput.value = '';
       if (!file) return;
       bgStatusError = false;
       bgStatusText = `Đang tải lên ${file.name}...`;
@@ -2134,10 +2569,13 @@
       statusEl.textContent = bgStatusText;
       try {
         const uploaded = await uploadMediaFile(file);
+        if (uploaded.kind !== 'video' && uploaded.kind !== 'image') {
+          throw new Error('Vui lòng chọn tệp Video hoặc Ảnh cho hình nền (tệp âm thanh hãy tải ở tab Âm thanh).');
+        }
         if (uploaded.kind === 'video') {
-          saveState({ wpEnabled: true, mode: 'video', activeVideo: uploaded.url });
+          saveState({ wpEnabled: true, mode: 'video', activeVideo: uploaded.url }, true);
         } else {
-          saveState({ wpEnabled: true, mode: 'image', activeImage: uploaded.url });
+          saveState({ wpEnabled: true, mode: 'image', activeImage: uploaded.url }, true);
         }
         bgStatusError = false;
         bgStatusText = uploaded.duplicate
@@ -2155,7 +2593,7 @@
 
     panel.querySelectorAll('[data-select-video]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        saveState({ wpEnabled: true, mode: 'video', activeVideo: btn.dataset.selectVideo });
+        saveState({ wpEnabled: true, mode: 'video', activeVideo: btn.dataset.selectVideo }, true);
         applyTheme();
         renderBgPanel(panel, backdrop);
       });
@@ -2163,7 +2601,7 @@
 
     panel.querySelectorAll('[data-select-image]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        saveState({ wpEnabled: true, mode: 'image', activeImage: btn.dataset.selectImage });
+        saveState({ wpEnabled: true, mode: 'image', activeImage: btn.dataset.selectImage }, true);
         applyTheme();
         renderBgPanel(panel, backdrop);
       });
@@ -2171,10 +2609,17 @@
 
     panel.querySelectorAll('[data-del-file]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        await deleteMediaFile(btn.dataset.delFile, btn.dataset.delUrl);
-        bgStatusError = false;
-        bgStatusText = 'Đã xóa tệp khỏi ổ đĩa.';
-        renderBgPanel(panel, backdrop);
+        try {
+          await deleteMediaFile(btn.dataset.delFile, btn.dataset.delUrl);
+          bgStatusError = false;
+          bgStatusText = 'Đã xóa tệp khỏi ổ đĩa.';
+          renderBgPanel(panel, backdrop);
+        } catch (err) {
+          bgStatusError = true;
+          bgStatusText = `Lỗi xóa tệp: ${err.message}`;
+          statusEl.className = 'ats-status error';
+          statusEl.textContent = bgStatusText;
+        }
       });
     });
   }
@@ -2251,7 +2696,7 @@
 
       <div class="ats-row">
         <div style="display:flex;align-items:center;gap:10px">
-          <div class="ats-avatar-preview" style="${state.userAvatar ? `background-image:url('${sanitizeCssUrl(state.userAvatar)}')` : ''}"></div>
+          <div class="ats-avatar-preview" style="${state.userAvatar ? `background-image:url('${sanitizeCssUrl(toShortBlobUrl(state.userAvatar))}')` : ''}"></div>
           <div>
             <div class="ats-row-title">Ảnh đại diện User</div>
             <div class="ats-row-sub">Tự động nén 192×192 WebP siêu nhẹ</div>
@@ -2281,7 +2726,7 @@
 
       <div class="ats-row">
         <div style="display:flex;align-items:center;gap:10px">
-          <div class="ats-avatar-preview" style="${state.agentAvatar ? `background-image:url('${sanitizeCssUrl(state.agentAvatar)}')` : ''}"></div>
+          <div class="ats-avatar-preview" style="${state.agentAvatar ? `background-image:url('${sanitizeCssUrl(toShortBlobUrl(state.agentAvatar))}')` : ''}"></div>
           <div>
             <div class="ats-row-title">Ảnh đại diện Agent</div>
             <div class="ats-row-sub">Hiển thị ở góc trên bên trái thẻ trả lời của AI</div>
@@ -2310,7 +2755,7 @@
     `);
 
     panel.querySelector('#ats-fab-toggle').addEventListener('change', (e) => {
-      saveState({ showFloatingBtn: e.target.checked });
+      saveState({ showFloatingBtn: e.target.checked }, true);
       injectSidebarButton();
     });
 
@@ -2320,7 +2765,7 @@
       const pct = Number(dimSlider.value);
       dimVal.textContent = `${pct}%`;
       saveState({ dimOpacity: pct / 100 });
-      applyTheme();
+      applyTheme({ debounceBlur: true });
     });
 
     const blurSlider = panel.querySelector('#ats-blur-slider');
@@ -2329,7 +2774,7 @@
       const px = Number(blurSlider.value);
       blurVal.textContent = `${px}px`;
       saveState({ glassBlur: px });
-      applyTheme();
+      applyTheme({ debounceBlur: true });
     });
 
     panel.querySelector('#ats-primary-picker').addEventListener('input', (e) => {
@@ -2338,23 +2783,23 @@
     });
 
     panel.querySelector('#ats-reset-accent').addEventListener('click', () => {
-      saveState({ primaryOverride: '' });
+      saveState({ primaryOverride: '' }, true);
       applyTheme();
       renderLookPanel(panel);
     });
 
     panel.querySelector('#ats-bubble-select').addEventListener('change', (e) => {
-      saveState({ bubblePreset: e.target.value });
+      saveState({ bubblePreset: e.target.value }, true);
       applyTheme();
     });
 
     panel.querySelector('#ats-input-select').addEventListener('change', (e) => {
-      saveState({ inputStyle: e.target.value });
+      saveState({ inputStyle: e.target.value }, true);
       applyTheme();
     });
 
     panel.querySelector('#ats-bgpos-select').addEventListener('change', (e) => {
-      saveState({ bgPosition: e.target.value });
+      saveState({ bgPosition: e.target.value }, true);
       applyTheme();
     });
 
@@ -2389,6 +2834,7 @@
     panel.querySelector('#ats-import-cfg').addEventListener('click', () => importInput.click());
     importInput.addEventListener('change', () => {
       const f = importInput.files && importInput.files[0];
+      importInput.value = '';
       if (!f) return;
       const reader = new FileReader();
       reader.onload = () => {
@@ -2409,6 +2855,25 @@
           if (sanitized.bubblePreset && !PRESETS[sanitized.bubblePreset]) sanitized.bubblePreset = sanitized.preset || state.preset;
           if (sanitized.inputStyle && !INPUT_STYLES[sanitized.inputStyle]) sanitized.inputStyle = 'sync';
           if (sanitized.mode && !['video', 'image', 'gradient'].includes(sanitized.mode)) sanitized.mode = 'video';
+          if ('customGreetings' in sanitized) {
+            const validLines = Array.isArray(sanitized.customGreetings)
+              ? sanitized.customGreetings.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim())
+              : [];
+            sanitized.customGreetings = validLines.length ? validLines : DEFAULT_GREETINGS.slice();
+          }
+          for (const [numKey, lo, hi, fallback] of [
+            ['dimOpacity', 0, 0.92, DEFAULT_STATE.dimOpacity],
+            ['glassBlur', 0, 14, DEFAULT_STATE.glassBlur],
+            ['taskSoundVolume', 0, 1, DEFAULT_STATE.taskSoundVolume],
+            ['bootSoundVolume', 0, 1, DEFAULT_STATE.bootSoundVolume],
+            ['avatarSize', 22, 52, DEFAULT_STATE.avatarSize],
+            ['avatarRadius', 0, 50, DEFAULT_STATE.avatarRadius]
+          ]) {
+            if (numKey in sanitized) {
+              const n = Number(sanitized[numKey]);
+              sanitized[numKey] = Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback;
+            }
+          }
           saveState(sanitized, true);
           applyTheme();
           injectSidebarButton();
@@ -2451,9 +2916,10 @@
     panel.querySelector('#ats-user-av-btn').addEventListener('click', () => userAvInput.click());
     userAvInput.addEventListener('change', () => {
       const f = userAvInput.files && userAvInput.files[0];
+      userAvInput.value = '';
       if (!f) return;
       compressAvatarFile(f, (dataUrl) => {
-        saveState({ userAvatar: dataUrl });
+        saveState({ userAvatar: dataUrl }, true);
         applyTheme();
         renderLookPanel(panel);
       });
@@ -2461,7 +2927,7 @@
     const userAvClear = panel.querySelector('#ats-user-av-clear');
     if (userAvClear) {
       userAvClear.addEventListener('click', () => {
-        saveState({ userAvatar: '' });
+        saveState({ userAvatar: '' }, true);
         applyTheme();
         renderLookPanel(panel);
       });
@@ -2471,9 +2937,10 @@
     panel.querySelector('#ats-agent-av-btn').addEventListener('click', () => agentAvInput.click());
     agentAvInput.addEventListener('change', () => {
       const f = agentAvInput.files && agentAvInput.files[0];
+      agentAvInput.value = '';
       if (!f) return;
       compressAvatarFile(f, (dataUrl) => {
-        saveState({ agentAvatar: dataUrl });
+        saveState({ agentAvatar: dataUrl }, true);
         applyTheme();
         renderLookPanel(panel);
       });
@@ -2481,7 +2948,7 @@
     const agentAvClear = panel.querySelector('#ats-agent-av-clear');
     if (agentAvClear) {
       agentAvClear.addEventListener('click', () => {
-        saveState({ agentAvatar: '' });
+        saveState({ agentAvatar: '' }, true);
         applyTheme();
         renderLookPanel(panel);
       });
@@ -2548,15 +3015,16 @@
         </div>
         <input type="checkbox" id="ats-greeting-toggle" ${state.customGreetingEnabled ? 'checked' : ''} />
       </div>
-      <textarea class="ats-textarea" id="ats-greetings-input" placeholder="Mỗi dòng là một câu chào...">${escapeHtml((state.customGreetings || []).join('\n'))}</textarea>
-      <div style="display:flex;justify-content:flex-end">
+      <textarea class="ats-textarea" id="ats-greetings-input" spellcheck="false" placeholder="Mỗi dòng là một câu chào...">${escapeHtml((state.customGreetings || []).join('\n'))}</textarea>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <span class="ats-status" id="ats-greeting-status" style="min-height:18px"></span>
         <button type="button" class="ats-btn" id="ats-save-greetings">Lưu câu chào</button>
       </div>
     `);
 
     panel.querySelector('#ats-test-sound').addEventListener('click', () => playTaskSound(true));
     panel.querySelector('#ats-sound-toggle').addEventListener('change', (e) => {
-      saveState({ taskSoundEnabled: e.target.checked });
+      saveState({ taskSoundEnabled: e.target.checked }, true);
     });
 
     const volSlider = panel.querySelector('#ats-vol-slider');
@@ -2571,6 +3039,7 @@
     panel.querySelector('#ats-audio-upload-btn').addEventListener('click', () => audioInput.click());
     audioInput.addEventListener('change', async () => {
       const file = audioInput.files && audioInput.files[0];
+      audioInput.value = '';
       if (!file) return;
       audioStatusError = false;
       audioStatusText = `Đang tải lên ${file.name}...`;
@@ -2578,7 +3047,10 @@
       statusEl.textContent = audioStatusText;
       try {
         const uploaded = await uploadMediaFile(file);
-        saveState({ activeAudio: uploaded.url });
+        if (uploaded.kind !== 'audio') {
+          throw new Error('Vui lòng chọn tệp âm thanh (.mp3, .wav, .ogg, .m4a).');
+        }
+        saveState({ activeAudio: uploaded.url }, true);
         audioStatusError = false;
         audioStatusText = `Đã thêm âm thanh: ${uploaded.name}`;
         playTaskSound(true);
@@ -2593,7 +3065,7 @@
 
     panel.querySelectorAll('[data-select-audio]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        saveState({ activeAudio: btn.dataset.selectAudio });
+        saveState({ activeAudio: btn.dataset.selectAudio }, true);
         playTaskSound(true);
         renderAudioPanel(panel);
       });
@@ -2601,26 +3073,46 @@
 
     panel.querySelectorAll('[data-del-audio-file]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        await deleteMediaFile(btn.dataset.delAudioFile, btn.dataset.delAudioUrl);
-        audioStatusError = false;
-        audioStatusText = 'Đã xóa âm thanh.';
-        renderAudioPanel(panel);
+        try {
+          await deleteMediaFile(btn.dataset.delAudioFile, btn.dataset.delAudioUrl);
+          audioStatusError = false;
+          audioStatusText = 'Đã xóa âm thanh.';
+          renderAudioPanel(panel);
+        } catch (err) {
+          audioStatusError = true;
+          audioStatusText = `Lỗi xóa âm thanh: ${err.message}`;
+          statusEl.className = 'ats-status error';
+          statusEl.textContent = audioStatusText;
+        }
       });
     });
 
     panel.querySelector('#ats-greeting-toggle').addEventListener('change', (e) => {
-      saveState({ customGreetingEnabled: e.target.checked });
+      saveState({ customGreetingEnabled: e.target.checked }, true);
+      window.__ATS_GREETING_FRESH__ = true;
       syncEmptyGreeting();
     });
 
-    panel.querySelector('#ats-save-greetings').addEventListener('click', () => {
-      const lines = panel.querySelector('#ats-greetings-input').value
+    const saveGreetingsBtn = panel.querySelector('#ats-save-greetings');
+    const greetingStatusEl = panel.querySelector('#ats-greeting-status');
+    const greetingsInput = panel.querySelector('#ats-greetings-input');
+    saveGreetingsBtn.addEventListener('click', () => {
+      const lines = (greetingsInput.value || '')
         .split(/\r?\n/)
         .map((s) => s.trim())
         .filter(Boolean);
-      saveState({ customGreetings: lines.length ? lines : DEFAULT_GREETINGS.slice() });
+      const nextGreetings = lines.length ? lines : DEFAULT_GREETINGS.slice();
+      greetingsInput.value = nextGreetings.join('\n');
+      saveState({ customGreetings: nextGreetings }, true);
       window.__ATS_GREETING_FRESH__ = true;
       syncEmptyGreeting();
+      saveGreetingsBtn.textContent = '✓ Đã lưu câu chào!';
+      if (greetingStatusEl) {
+        greetingStatusEl.textContent = `Đã lưu ${nextGreetings.length} câu chào vào hệ thống.`;
+      }
+      setTimeout(() => {
+        if (saveGreetingsBtn.isConnected) saveGreetingsBtn.textContent = 'Lưu câu chào';
+      }, 1800);
     });
   }
 
@@ -2691,11 +3183,11 @@
     `);
 
     panel.querySelector('#ats-hud-toggle').addEventListener('change', (e) => {
-      saveState({ bootHudEnabled: e.target.checked });
+      saveState({ bootHudEnabled: e.target.checked }, true);
     });
 
     panel.querySelector('#ats-boot-sound-toggle').addEventListener('change', (e) => {
-      saveState({ bootSoundEnabled: e.target.checked });
+      saveState({ bootSoundEnabled: e.target.checked }, true);
     });
 
     panel.querySelector('#ats-boot-test-sound').addEventListener('click', () => {
@@ -2710,7 +3202,7 @@
     });
 
     panel.querySelector('#ats-boot-audio-select').addEventListener('change', (e) => {
-      saveState({ bootAudio: e.target.value });
+      saveState({ bootAudio: e.target.value }, true);
       playBootAudio(true);
     });
 
@@ -2719,6 +3211,7 @@
     panel.querySelector('#ats-boot-audio-upload-btn').addEventListener('click', () => bootUploadInput.click());
     bootUploadInput.addEventListener('change', async () => {
       const file = bootUploadInput.files && bootUploadInput.files[0];
+      bootUploadInput.value = '';
       if (!file) return;
       hudStatusError = false;
       hudStatusText = `Đang tải lên ${file.name}...`;
@@ -2726,7 +3219,10 @@
       hudStatusEl.textContent = hudStatusText;
       try {
         const uploaded = await uploadMediaFile(file);
-        saveState({ bootAudio: uploaded.url, bootSoundEnabled: true });
+        if (uploaded.kind !== 'audio') {
+          throw new Error('Vui lòng chọn tệp âm thanh (.mp3, .wav, .ogg, .m4a).');
+        }
+        saveState({ bootAudio: uploaded.url, bootSoundEnabled: true }, true);
         hudStatusError = false;
         hudStatusText = `Đã chọn âm thanh Boot: ${uploaded.name}`;
         playBootAudio(true);
@@ -2739,11 +3235,20 @@
       }
     });
 
+    const saveHudBtn = panel.querySelector('#ats-hud-save');
     const saveHud = () => {
       saveState({
         bootHudTitle: panel.querySelector('#ats-hud-title').value.trim() || 'ANTIGRAVITY STUDIO',
         bootHudSub: panel.querySelector('#ats-hud-sub').value.trim() || 'DARK GLASS ENGINE // READY'
-      });
+      }, true);
+      saveHudBtn.textContent = '✓ Đã lưu!';
+      if (hudStatusEl) {
+        hudStatusEl.className = 'ats-status';
+        hudStatusEl.textContent = 'Đã lưu tiêu đề và cấu hình Boot HUD.';
+      }
+      setTimeout(() => {
+        if (saveHudBtn.isConnected) saveHudBtn.textContent = 'Lưu cấu hình';
+      }, 1800);
     };
 
     panel.querySelector('#ats-hud-save').addEventListener('click', saveHud);
@@ -2755,19 +3260,47 @@
   }
 
   // --------------------------------------------------------------------------
-  // 11. Lifecycle, rAF-Throttled Observer & Complete Cleanup
+  // 11. Lifecycle, Throttled Observer & Complete Cleanup
   // --------------------------------------------------------------------------
   function cleanup() {
     clearTitleBarTimers();
     stopBootAudio();
     stopTaskAudio();
+    if (window.__ATS_BLUR_TIMER__) {
+      clearTimeout(window.__ATS_BLUR_TIMER__);
+      window.__ATS_BLUR_TIMER__ = 0;
+    }
     if (window.__ATS_TASK_TIMER__) {
       clearTimeout(window.__ATS_TASK_TIMER__);
       window.__ATS_TASK_TIMER__ = null;
     }
+    if (window.__ATS_TICK_TIMER__) {
+      clearTimeout(window.__ATS_TICK_TIMER__);
+      window.__ATS_TICK_TIMER__ = 0;
+    }
     if (window.__ATS_TICK_RAF__) {
       cancelAnimationFrame(window.__ATS_TICK_RAF__);
       window.__ATS_TICK_RAF__ = 0;
+    }
+    if (window.__ATS_METRICS_RAF__) {
+      cancelAnimationFrame(window.__ATS_METRICS_RAF__);
+      window.__ATS_METRICS_RAF__ = 0;
+    }
+    if (window.__ATS_BLUR_CACHE__ instanceof Map) {
+      window.__ATS_BLUR_CACHE__.forEach((v) => {
+        if (typeof v === 'string' && v.startsWith('blob:')) {
+          try { URL.revokeObjectURL(v); } catch (_) {}
+        }
+      });
+      window.__ATS_BLUR_CACHE__.clear();
+    }
+    if (window.__ATS_BLOB_CACHE__ instanceof Map) {
+      window.__ATS_BLOB_CACHE__.forEach((v) => {
+        if (typeof v === 'string' && v.startsWith('blob:')) {
+          try { URL.revokeObjectURL(v); } catch (_) {}
+        }
+      });
+      window.__ATS_BLOB_CACHE__.clear();
     }
     if (window.__ATS_MUTATION_OBSERVER__) {
       try { window.__ATS_MUTATION_OBSERVER__.disconnect(); } catch (_) {}
@@ -2783,8 +3316,14 @@
     }
     window.__ATS_OBSERVED_PARTS__ = null;
     window.__ATS_WV_EL__ = null;
+    window.__ATS_HOLE_EL__ = null;
+    window.__ATS_SIDE_EL__ = null;
+    window.__ATS_SIDE_HAS_CONTENT__ = false;
     window.__ATS_LAST_RECT_SIG__ = '';
+    window.__ATS_LAST_METRICS_CSS__ = '';
+    window.__ATS_METRICS_STATE__ = { glassBg: '', beforeClip: '', holeClip: '' };
     window.__ATS_EXT_RECT__ = null;
+    window.__ATS_VIDEO_SNAP__ = null;
     if (window.__ATS_EVENT_AC__) {
       try { window.__ATS_EVENT_AC__.abort(); } catch (_) {}
       window.__ATS_EVENT_AC__ = null;
@@ -2795,7 +3334,7 @@
       releaseVideoDecoder(liveBg.querySelector('video'));
       liveBg.remove();
     }
-    ['ats-static-style', 'ats-active-theme', 'ats-sidebar-btn', 'ats-studio-fab', 'ats-settings-btn', 'ats-modal-backdrop', 'ats-boot-hud'].forEach((id) => {
+    ['ats-static-style', 'ats-active-theme', 'ats-metrics-style', 'ats-sidebar-btn', 'ats-studio-fab', 'ats-settings-btn', 'ats-modal-backdrop', 'ats-boot-hud'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.remove();
     });
@@ -2818,10 +3357,8 @@
     if (shell) {
       delete shell.dataset.atsHoleActive;
       delete shell.dataset.atsSideGlass;
-      shell.style.removeProperty('--ats-hole-clip');
-      shell.style.removeProperty('--ats-l-glass-bg');
-      shell.style.removeProperty('--ats-sidebar-w');
-      shell.style.removeProperty('--ats-hdr-h');
+      delete shell.dataset.atsTboMounted;
+      ['--ats-hole-clip', '--ats-l-glass-bg', '--ats-sidebar-w', '--ats-hdr-h', '--ats-side-l', '--ats-side-t', '--ats-side-r', '--ats-side-b'].forEach((p) => shell.style.removeProperty(p));
     }
 
     if (window.electronNative && typeof window.electronNative.setTitleBarOverlay === 'function') {
@@ -2831,7 +3368,19 @@
     }
   }
 
-  function tick() {
+  function hookSidebarScroll() {
+    if (!window.__ATS_EVENT_AC__) return;
+    const scrollers = document.querySelectorAll('.agy-shell .bg-sidebar .overflow-y-auto');
+    scrollers.forEach((sc) => {
+      if (sc.dataset.atsScrollBound) return;
+      sc.dataset.atsScrollBound = '1';
+      const sync = () => sc.classList.toggle('ats-scrolled', sc.scrollTop > 2);
+      sync();
+      sc.addEventListener('scroll', sync, { passive: true, signal: window.__ATS_EVENT_AC__.signal });
+    });
+  }
+
+  function tick(forceMetrics = false) {
     const expectedHost = isIdeHost() ? document.body : findActiveShell();
     if (expectedHost && state.wpEnabled) {
       const liveLayer = document.getElementById('ats-live-bg-layer');
@@ -2841,25 +3390,63 @@
     }
     injectSidebarButton();
     injectSettingsButton();
-    hookShellMetrics();
+    hookSidebarScroll();
+    hookShellMetrics(forceMetrics);
     syncEmptyGreeting();
     syncTaskCompletionVoice();
   }
 
-  function scheduleTick() {
-    if (window.__ATS_TICK_RAF__) return;
-    window.__ATS_TICK_RAF__ = requestAnimationFrame(() => {
-      window.__ATS_TICK_RAF__ = 0;
-      tick();
-    });
+  function scheduleTick(mutations) {
+    const attrChanged = Array.isArray(mutations) && mutations.some((m) => m.type === 'attributes');
+    if (attrChanged) {
+      window.__ATS_FORCE_METRICS__ = true;
+      if (window.__ATS_TICK_TIMER__) {
+        clearTimeout(window.__ATS_TICK_TIMER__);
+        window.__ATS_TICK_TIMER__ = 0;
+      }
+      if (!window.__ATS_TICK_RAF__) {
+        window.__ATS_TICK_RAF__ = requestAnimationFrame(() => {
+          window.__ATS_TICK_RAF__ = 0;
+          const force = Boolean(window.__ATS_FORCE_METRICS__);
+          window.__ATS_FORCE_METRICS__ = false;
+          tick(force);
+        });
+      }
+      return;
+    }
+    if (window.__ATS_TICK_RAF__ || window.__ATS_TICK_TIMER__) return;
+    const mounted = Boolean(document.getElementById('ats-sidebar-btn') || document.getElementById('ats-studio-fab') || isExtensionWebview());
+    if (!mounted) {
+      window.__ATS_TICK_RAF__ = requestAnimationFrame(() => {
+        window.__ATS_TICK_RAF__ = 0;
+        tick(false);
+      });
+    } else {
+      window.__ATS_TICK_TIMER__ = setTimeout(() => {
+        window.__ATS_TICK_TIMER__ = 0;
+        tick(false);
+      }, 120);
+    }
   }
 
   function boot() {
     // Clean up any previous hot-reloaded instance listeners & stale UI
     clearTitleBarTimers();
+    if (window.__ATS_BLUR_TIMER__) {
+      clearTimeout(window.__ATS_BLUR_TIMER__);
+      window.__ATS_BLUR_TIMER__ = 0;
+    }
+    if (window.__ATS_TICK_TIMER__) {
+      clearTimeout(window.__ATS_TICK_TIMER__);
+      window.__ATS_TICK_TIMER__ = 0;
+    }
     if (window.__ATS_TICK_RAF__) {
       cancelAnimationFrame(window.__ATS_TICK_RAF__);
       window.__ATS_TICK_RAF__ = 0;
+    }
+    if (window.__ATS_METRICS_RAF__) {
+      cancelAnimationFrame(window.__ATS_METRICS_RAF__);
+      window.__ATS_METRICS_RAF__ = 0;
     }
     if (window.__ATS_MUTATION_OBSERVER__) {
       try { window.__ATS_MUTATION_OBSERVER__.disconnect(); } catch (_) {}
@@ -2875,7 +3462,14 @@
     }
     window.__ATS_OBSERVED_PARTS__ = null;
     window.__ATS_WV_EL__ = null;
+    window.__ATS_HOLE_EL__ = null;
+    window.__ATS_SIDE_EL__ = null;
+    window.__ATS_SIDE_HAS_CONTENT__ = false;
+    window.__ATS_FORCE_METRICS__ = false;
     window.__ATS_LAST_RECT_SIG__ = '';
+    window.__ATS_LAST_METRICS_CSS__ = '';
+    document.querySelectorAll('[data-ats-tbo-mounted]').forEach((el) => delete el.dataset.atsTboMounted);
+    document.querySelectorAll('[data-ats-scroll-bound]').forEach((el) => delete el.dataset.atsScrollBound);
     if (window.__ATS_EVENT_AC__) {
       try { window.__ATS_EVENT_AC__.abort(); } catch (_) {}
     }
@@ -2951,7 +3545,7 @@
         attributeFilter: ['data-has-browser-hole', 'data-browser-hole']
       });
     }
-    tick();
+    tick(true);
   }
 
   function updateConfigFromDaemon(nextCfg) {

@@ -1,20 +1,19 @@
 {
   "name": "antigravity-theme-studio",
-  "version": "1.0.0",
-  "description": "Custom Dark Glass Live Wallpaper, Boot HUD, Custom Greeting & Task Audio Engine for Antigravity via CDP",
+  "version": "2.0.0",
+  "description": "Pure-Rust Ultra-Low-RAM Custom Dark Glass Live Wallpaper, Boot HUD, Custom Greeting & Task Audio Engine for Antigravity, Antigravity IDE, and VS Code",
   "private": true,
-  "engines": {
-    "node": ">=22.0.0"
-  },
   "scripts": {
-    "build": "python scripts/build.py",
-    "check": "node --check dist/bundle.js && node --check daemon/server.js",
-    "start": "node daemon/server.js",
-    "verify": "node scripts/verify_cdp.js",
+    "build": "ats-theme.bat build",
+    "start": "ats-theme.bat start",
+    "stop": "ats-theme.bat stop",
+    "status": "ats-theme.bat status",
+    "verify": "ats-theme.bat verify",
+    "themes": "ats-theme.bat themes",
     "install-win": "powershell -ExecutionPolicy Bypass -File scripts/install-win.ps1",
     "launch": "powershell -ExecutionPolicy Bypass -File scripts/launch-app.ps1",
     "launch-ide": "powershell -ExecutionPolicy Bypass -File scripts/launch-app.ps1 -Ide",
     "launch-vscode": "powershell -ExecutionPolicy Bypass -File scripts/launch-app.ps1 -Vscode",
-    "uninstall": "node scripts/uninstall.js"
+    "uninstall": "ats-theme.bat uninstall"
   }
 }
