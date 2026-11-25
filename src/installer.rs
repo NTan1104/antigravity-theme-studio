@@ -150,6 +150,87 @@ pub fn print_status(paths: &AppPaths) {
     } else {
         println!("CDP Targets: {}", active_ports.join(", "));
     }
+
+    #[cfg(windows)]
+    print_windows_autostart_diagnostics();
+}
+
+#[cfg(windows)]
+fn print_windows_autostart_diagnostics() {
+    use std::process::Command;
+
+    let ps = format!(
+        r#"
+$taskName = {task_q}
+$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if ($task) {{
+    $info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+    $lastRun = if ($info -and $info.LastRunTime -and $info.LastRunTime.Year -gt 2000) {{ $info.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss') }} else {{ 'never' }}
+    Write-Output "Autostart:   Scheduled Task '$taskName' ($($task.State), LastRun: $lastRun)"
+}} else {{
+    $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'AntigravityThemeStudio.lnk'
+    if (Test-Path $lnk) {{
+        Write-Output "Autostart:   Startup Shortcut ($lnk)"
+    }} else {{
+        Write-Output "Autostart:   NOT CONFIGURED (run 'ats-theme install')"
+    }}
+}}
+
+$wsh = New-Object -ComObject WScript.Shell
+$dirs = @(
+    [Environment]::GetFolderPath('Desktop'),
+    [Environment]::GetFolderPath('CommonDesktopDirectory'),
+    [Environment]::GetFolderPath('StartMenu'),
+    [Environment]::GetFolderPath('CommonStartMenu'),
+    (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar')
+) | Where-Object {{ $_ -and (Test-Path $_) }} | Select-Object -Unique
+
+$missing = @()
+$patched = 0
+foreach ($d in $dirs) {{
+    Get-ChildItem -Path $d -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
+        Where-Object {{ $_.Name -in @('Antigravity.lnk', 'Antigravity IDE.lnk', 'Visual Studio Code.lnk') }} |
+        ForEach-Object {{
+            try {{
+                $sc = $wsh.CreateShortcut($_.FullName)
+                if ($sc.TargetPath -match '(Antigravity IDE|Antigravity|Code)\.exe$') {{
+                    if ($sc.Arguments -match '--remote-debugging-port=\d+') {{
+                        $patched++
+                    }} else {{
+                        $missing += $_.FullName
+                    }}
+                }}
+            }} catch {{}}
+        }}
+}}
+if ($missing.Count -eq 0) {{
+    Write-Output "Shortcuts:   OK ($patched shortcut(s) have --remote-debugging-port)"
+}} else {{
+    Write-Output "Shortcuts:   WARNING - $($missing.Count) shortcut(s) missing CDP flag (re-run 'ats-theme install'):"
+    foreach ($m in $missing) {{ Write-Output "             - $m" }}
+}}
+"#,
+        task_q = ps_single_quote(WIN_TASK_NAME),
+    );
+
+    if let Ok(out) = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &ps,
+        ])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            if !line.trim().is_empty() {
+                println!("{line}");
+            }
+        }
+    }
 }
 
 pub fn install(
@@ -254,10 +335,11 @@ fn install_windows(
         r#"
 $SearchDirs = @(
     [Environment]::GetFolderPath('Desktop'),
+    [Environment]::GetFolderPath('CommonDesktopDirectory'),
     [Environment]::GetFolderPath('StartMenu'),
     [Environment]::GetFolderPath('CommonStartMenu'),
     (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar')
-) | Where-Object { $_ -and (Test-Path $_) }
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 
 foreach ($Dir in $SearchDirs) {
     Get-ChildItem -Path $Dir -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
@@ -299,7 +381,7 @@ if (Test-Path $LegacyShortcut) {{ Remove-Item $LegacyShortcut -Force -ErrorActio
 try {{
     $Action = New-ScheduledTaskAction -Execute {daemon_q} -Argument {args_q} -WorkingDirectory {root_q}
     $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description 'Antigravity Theme Studio Rust Daemon' -Force -ErrorAction Stop | Out-Null
     Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
     if (Test-Path $ShortcutPath) {{ Remove-Item $ShortcutPath -Force -ErrorAction SilentlyContinue }}
@@ -508,10 +590,11 @@ foreach ($t in @({t1}, 'AntigravityCustomTheme')) {{
 }}
 $dirs = @(
     [Environment]::GetFolderPath('Desktop'),
+    [Environment]::GetFolderPath('CommonDesktopDirectory'),
     [Environment]::GetFolderPath('StartMenu'),
     [Environment]::GetFolderPath('CommonStartMenu'),
     (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar')
-) | Where-Object {{ $_ -and (Test-Path $_) }}
+) | Where-Object {{ $_ -and (Test-Path $_) }} | Select-Object -Unique
 $wsh = New-Object -ComObject WScript.Shell
 foreach ($d in $dirs) {{
     Get-ChildItem -Path $d -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue |

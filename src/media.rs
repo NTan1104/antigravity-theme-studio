@@ -24,6 +24,7 @@ const MAX_UPLOAD_BYTES: usize = 150 * 1024 * 1024;
 const MAX_DELETE_JSON_BYTES: usize = 64 * 1024;
 
 static LAST_GLOBAL_TASK_SOUND_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_GLOBAL_PROMPT_SOUND_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MediaItem {
@@ -374,6 +375,11 @@ pub fn scan_user_media(paths: &AppPaths) -> MediaLibrary {
         .and_then(Value::as_str)
         .map(normalize_user_media_filename)
         .unwrap_or_default();
+    let active_prompt_aud = cfg
+        .get("promptAudio")
+        .and_then(Value::as_str)
+        .map(normalize_user_media_filename)
+        .unwrap_or_default();
 
     let Ok(entries) = fs::read_dir(&paths.user_media_dir) else {
         return MediaLibrary {
@@ -421,7 +427,8 @@ pub fn scan_user_media(paths: &AppPaths) -> MediaLibrary {
         let is_active = file_name == active_vid
             || file_name == active_img
             || file_name == active_aud
-            || file_name == active_boot_aud;
+            || file_name == active_boot_aud
+            || file_name == active_prompt_aud;
 
         match by_hash.get(&md5) {
             None => {
@@ -766,17 +773,23 @@ fn handle_http_connection(mut stream: TcpStream, paths: &AppPaths) {
     }
 
     if method == "POST" && pathname == "/api/claim-sound" {
+        let kind = parse_query_param(query, "kind").unwrap_or_else(|| "task".to_string());
+        let (slot, window_ms) = if kind.eq_ignore_ascii_case("prompt") {
+            (&LAST_GLOBAL_PROMPT_SOUND_MS, 1200u64)
+        } else {
+            (&LAST_GLOBAL_TASK_SOUND_MS, 3000u64)
+        };
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
         let mut allowed = false;
-        let mut prev = LAST_GLOBAL_TASK_SOUND_MS.load(Ordering::Acquire);
+        let mut prev = slot.load(Ordering::Acquire);
         loop {
-            if now_ms.saturating_sub(prev) < 3000 {
+            if now_ms.saturating_sub(prev) < window_ms {
                 break;
             }
-            match LAST_GLOBAL_TASK_SOUND_MS.compare_exchange_weak(
+            match slot.compare_exchange_weak(
                 prev,
                 now_ms,
                 Ordering::AcqRel,
@@ -793,7 +806,7 @@ fn handle_http_connection(mut stream: TcpStream, paths: &AppPaths) {
             &mut stream,
             200,
             "OK",
-            &json!({ "ok": true, "allowed": allowed }),
+            &json!({ "ok": true, "allowed": allowed, "kind": kind }),
         );
         return;
     }
@@ -1200,6 +1213,11 @@ fn handle_http_connection(mut stream: TcpStream, paths: &AppPaths) {
         if let Some(v) = cfg.get("bootAudio").and_then(Value::as_str) {
             if deleted_set.contains(&normalize_user_media_filename(v)) {
                 patch.insert("bootAudio".into(), json!(""));
+            }
+        }
+        if let Some(v) = cfg.get("promptAudio").and_then(Value::as_str) {
+            if deleted_set.contains(&normalize_user_media_filename(v)) {
+                patch.insert("promptAudio".into(), json!(""));
             }
         }
         if !patch.is_empty() {

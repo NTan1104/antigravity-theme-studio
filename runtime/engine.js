@@ -42,6 +42,8 @@
     taskSoundEnabled: true,
     taskSoundVolume: 0.75,
     activeAudio: '', // '' = random from uploaded audios or built-in Web Audio chime
+    promptSoundEnabled: true,
+    promptAudio: '', // '' = built-in attention ping, '__same__' = task sound, or custom audio URL
     customGreetingEnabled: true,
     customGreetings: DEFAULT_GREETINGS.slice(),
     bootHudEnabled: true,
@@ -1757,6 +1759,33 @@
     lastPlayedUrl: ''
   });
 
+  const PROMPT_TESTID_SELECTOR = [
+    '[data-testid="inline-permission-card"]',
+    '[data-testid="inline-permission-in-chat"]',
+    '[data-testid="toast-permission"]',
+    '[data-testid="subagent-approve"]',
+    '[data-testid="computer-permissions-card"]',
+    '[data-testid="declared-permissions-modal"]',
+    '[data-testid="terminal-password-prompt-blocked"]',
+    '[data-testid="webview-prompt-card"]',
+    '[data-testid="browser-cert-proceed-button"]',
+    '[data-testid="external-link-confirm-modal"]',
+    '[data-testid="unauthenticated-standalone-overlay"]',
+    '[data-testid="onboarding-auth-code-panel"]',
+    '[data-testid="ask-question-option"]',
+    '[data-testid="ask-question-writein"]',
+    '[data-testid="ask-question-dismiss-button"]'
+  ].join(',');
+
+  const promptAudioState = window.__ATS_PROMPT_AUDIO_STATE__ || (window.__ATS_PROMPT_AUDIO_STATE__ = {
+    activeKeys: new Set(),
+    recentNotified: new Map(),
+    lastPlayedAt: 0,
+    lastUrl: location.href,
+    urlChangedAt: 0,
+    seeded: false
+  });
+
   function stopTaskAudio() {
     const audio = window.__ATS_TASK_AUDIO__;
     if (audio) {
@@ -1769,11 +1798,26 @@
     }
   }
 
+  function stopPromptAudio() {
+    const audio = window.__ATS_PROMPT_AUDIO__;
+    if (audio) {
+      try {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+      } catch (_) {}
+      window.__ATS_PROMPT_AUDIO__ = null;
+    }
+  }
+
   function playBuiltInChime(volume = 0.75) {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
       const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
       const now = ctx.currentTime;
       const notes = [523.25, 659.25, 783.99, 1046.5];
       notes.forEach((freq, idx) => {
@@ -1791,6 +1835,205 @@
       });
       setTimeout(() => ctx.close().catch(() => {}), 1200);
     } catch (_) {}
+  }
+
+  function playBuiltInPromptChime(volume = 0.75) {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+      const now = ctx.currentTime;
+      // Distinct 2-note upward attention ping (E5 -> B5) with subtle triangle harmonic
+      const notes = [
+        { freq: 659.25, delay: 0.0, dur: 0.26, amp: 0.24 },
+        { freq: 987.77, delay: 0.11, dur: 0.42, amp: 0.28 }
+      ];
+      notes.forEach(({ freq, delay, dur, amp }) => {
+        const t = now + delay;
+        const osc = ctx.createOscillator();
+        const sub = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, t);
+        sub.type = 'triangle';
+        sub.frequency.setValueAtTime(freq * 1.5, t);
+        const subGain = ctx.createGain();
+        subGain.gain.setValueAtTime(0.18, t);
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(Math.max(0.01, volume * amp), t + 0.018);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        osc.connect(gain);
+        sub.connect(subGain);
+        subGain.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        sub.start(t);
+        osc.stop(t + dur + 0.04);
+        sub.stop(t + dur + 0.04);
+      });
+      setTimeout(() => ctx.close().catch(() => {}), 1000);
+    } catch (_) {}
+  }
+
+  function playPromptSound(force = false) {
+    if (!force && state.promptSoundEnabled === false) return;
+    const vol = Math.min(1, Math.max(0, Number(state.taskSoundVolume ?? 0.75)));
+
+    if (state.promptAudio === '__same__') {
+      playTaskSound(true);
+      return;
+    }
+
+    if (state.promptAudio) {
+      stopPromptAudio();
+      try {
+        const audio = new Audio(resolveMediaUrl(state.promptAudio));
+        audio.volume = vol;
+        window.__ATS_PROMPT_AUDIO__ = audio;
+        const cleanupAudio = () => {
+          try {
+            audio.pause();
+            audio.removeAttribute('src');
+            audio.load();
+          } catch (_) {}
+          if (window.__ATS_PROMPT_AUDIO__ === audio) window.__ATS_PROMPT_AUDIO__ = null;
+        };
+        audio.addEventListener('ended', cleanupAudio, { once: true });
+        audio.addEventListener('error', () => {
+          cleanupAudio();
+          playBuiltInPromptChime(vol);
+        }, { once: true });
+        audio.play().catch(() => {
+          cleanupAudio();
+          playBuiltInPromptChime(vol);
+        });
+        return;
+      } catch (_) {}
+    }
+
+    playBuiltInPromptChime(vol);
+  }
+
+  function isVisiblePromptNode(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.closest('#ats-modal-backdrop, [data-testid="ask-question-entry-readonly"]')) return false;
+    try {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 && r.height <= 0) return false;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+    } catch (_) {}
+    return true;
+  }
+
+  function collectActivePromptKeys() {
+    const keys = new Set();
+    const nodes = document.querySelectorAll(PROMPT_TESTID_SELECTOR);
+    if (!nodes || nodes.length === 0) return keys;
+
+    let hasAskQuestion = false;
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (!isVisiblePromptNode(el)) continue;
+      const tid = el.getAttribute('data-testid') || '';
+
+      if (tid.startsWith('ask-question-')) {
+        hasAskQuestion = true;
+        continue;
+      }
+
+      // Deduplicate nested permission markers inside the same inline-permission container
+      if (tid === 'subagent-approve' && el.closest('[data-testid="inline-permission-card"], [data-testid="inline-permission-in-chat"]')) {
+        continue;
+      }
+      if (tid === 'inline-permission-card' && el.closest('[data-testid="inline-permission-in-chat"]')) {
+        continue;
+      }
+
+      if (tid === 'inline-permission-card' || tid === 'inline-permission-in-chat') {
+        const titleEl = el.querySelector('[data-testid="permission-title"]');
+        const cmdEl = el.querySelector('[data-testid="permission-trigger-command"]');
+        const sigText = `${titleEl?.textContent || ''}|${cmdEl?.textContent || ''}`.trim()
+          || (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+        keys.add(`perm:${sigText}`);
+      } else {
+        const sigText = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+        keys.add(`${tid}:${sigText}`);
+      }
+    }
+
+    if (hasAskQuestion) {
+      const headers = Array.from(document.querySelectorAll('[data-testid="ask-question-header-text"]'))
+        .filter((h) => isVisiblePromptNode(h));
+      const progresses = Array.from(document.querySelectorAll('[data-testid="ask-question-progress"]'))
+        .filter((p) => isVisiblePromptNode(p));
+      const hTxt = (headers[headers.length - 1]?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+      const pTxt = (progresses[progresses.length - 1]?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      keys.add(`ask-question:${hTxt}|${pTxt}`);
+    }
+
+    return keys;
+  }
+
+  function syncPromptAttentionVoice(seedOnly = false) {
+    if (isIdeHost()) return;
+    const now = Date.now();
+    if (location.href !== promptAudioState.lastUrl) {
+      promptAudioState.lastUrl = location.href;
+      promptAudioState.urlChangedAt = now;
+    }
+
+    const curKeys = collectActivePromptKeys();
+    const prevKeys = promptAudioState.activeKeys;
+
+    if (seedOnly || !promptAudioState.seeded) {
+      promptAudioState.activeKeys = curKeys;
+      promptAudioState.seeded = true;
+      curKeys.forEach((k) => promptAudioState.recentNotified.set(k, now));
+      return;
+    }
+
+    // Prune stale history older than 90s
+    if (promptAudioState.recentNotified.size > 24) {
+      promptAudioState.recentNotified.forEach((ts, k) => {
+        if (now - ts > 90000) promptAudioState.recentNotified.delete(k);
+      });
+    }
+
+    let shouldNotify = false;
+    const justSwitchedUrl = (now - promptAudioState.urlChangedAt) < 800;
+
+    curKeys.forEach((k) => {
+      if (prevKeys.has(k)) return;
+      const prevTs = promptAudioState.recentNotified.get(k) || 0;
+      if (justSwitchedUrl && prevTs > 0 && (now - prevTs) < 60000) {
+        return;
+      }
+      promptAudioState.recentNotified.set(k, now);
+      shouldNotify = true;
+    });
+
+    promptAudioState.activeKeys = curKeys;
+
+    if (!shouldNotify) return;
+    if (state.promptSoundEnabled === false) return;
+    if (now - (promptAudioState.lastPlayedAt || 0) < 1000) return;
+
+    promptAudioState.lastPlayedAt = now;
+    const base = getMediaBase();
+    if (base) {
+      fetch(`${base}/api/claim-sound?kind=prompt`, { method: 'POST' })
+        .then((r) => r.json())
+        .then((d) => {
+          if (!d || d.allowed !== false) playPromptSound(false);
+        })
+        .catch(() => playPromptSound(false));
+    } else {
+      playPromptSound(false);
+    }
   }
 
   function playTaskSound(force = false) {
@@ -2189,6 +2432,9 @@
     }
     if (wasDeleted(state.bootAudio)) {
       patch.bootAudio = '';
+    }
+    if (wasDeleted(state.promptAudio)) {
+      patch.promptAudio = '';
     }
     if (Object.keys(patch).length > 0) {
       saveState(patch, true);
@@ -2976,6 +3222,14 @@
       </div>
     `).join('');
 
+    const promptAudioOptions = [
+      `<option value="" ${!state.promptAudio ? 'selected' : ''}>Chuông hỏi / xác thực tích hợp sẵn (Mặc định)</option>`,
+      `<option value="__same__" ${state.promptAudio === '__same__' ? 'selected' : ''}>Dùng chung âm thanh hoàn thành tác vụ</option>`,
+      ...(mediaLibrary.audios || []).map((a) =>
+        `<option value="${escapeHtml(a.url)}" ${isSameMediaUrl(state.promptAudio, a.url) ? 'selected' : ''}>${escapeHtml(a.name)}</option>`
+      )
+    ].join('');
+
     setHtml(panel, `
       <div class="ats-row">
         <div>
@@ -2986,6 +3240,25 @@
           <button type="button" class="ats-btn ats-btn-ghost" id="ats-test-sound">Nghe thử</button>
           <input type="checkbox" id="ats-sound-toggle" ${state.taskSoundEnabled ? 'checked' : ''} />
         </div>
+      </div>
+
+      <div class="ats-row">
+        <div>
+          <div class="ats-row-title">Âm thanh khi Model hỏi / yêu cầu xác thực</div>
+          <div class="ats-row-sub">Phát thông báo khi AI hỏi câu hỏi hoặc chờ xác nhận quyền (Local Permission, Confirm, Auth)</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button type="button" class="ats-btn ats-btn-ghost" id="ats-test-prompt-sound">Nghe thử</button>
+          <input type="checkbox" id="ats-prompt-sound-toggle" ${state.promptSoundEnabled !== false ? 'checked' : ''} />
+        </div>
+      </div>
+
+      <div class="ats-row">
+        <div>
+          <div class="ats-row-title">Kiểu âm báo hỏi / xác thực</div>
+          <div class="ats-row-sub">Chọn chuông riêng dễ phân biệt, dùng chung với âm hoàn thành hoặc tệp đã tải lên</div>
+        </div>
+        <select class="ats-select" id="ats-prompt-audio-select" style="max-width:250px">${promptAudioOptions}</select>
       </div>
 
       <div class="ats-row">
@@ -3025,6 +3298,14 @@
     panel.querySelector('#ats-test-sound').addEventListener('click', () => playTaskSound(true));
     panel.querySelector('#ats-sound-toggle').addEventListener('change', (e) => {
       saveState({ taskSoundEnabled: e.target.checked }, true);
+    });
+    panel.querySelector('#ats-test-prompt-sound').addEventListener('click', () => playPromptSound(true));
+    panel.querySelector('#ats-prompt-sound-toggle').addEventListener('change', (e) => {
+      saveState({ promptSoundEnabled: e.target.checked }, true);
+    });
+    panel.querySelector('#ats-prompt-audio-select').addEventListener('change', (e) => {
+      saveState({ promptAudio: e.target.value }, true);
+      playPromptSound(true);
     });
 
     const volSlider = panel.querySelector('#ats-vol-slider');
@@ -3266,6 +3547,7 @@
     clearTitleBarTimers();
     stopBootAudio();
     stopTaskAudio();
+    stopPromptAudio();
     if (window.__ATS_BLUR_TIMER__) {
       clearTimeout(window.__ATS_BLUR_TIMER__);
       window.__ATS_BLUR_TIMER__ = 0;
@@ -3394,6 +3676,7 @@
     hookShellMetrics(forceMetrics);
     syncEmptyGreeting();
     syncTaskCompletionVoice();
+    syncPromptAttentionVoice(false);
   }
 
   function scheduleTick(mutations) {
@@ -3534,6 +3817,7 @@
 
     applyTheme();
     playBootHud(false);
+    syncPromptAttentionVoice(true);
 
     window.__ATS_MUTATION_OBSERVER__ = new MutationObserver(scheduleTick);
     const observeRoot = document.body || document.documentElement;
@@ -3570,7 +3854,7 @@
   }
 
   window.__ATS_ENGINE__ = {
-    version: '2.1.0',
+    version: '2.2.0',
     reapply: applyTheme,
     updateConfig: updateConfigFromDaemon,
     syncRect: (force = true) => syncShellMetrics(Boolean(force)),
@@ -3581,6 +3865,7 @@
     },
     playBootHud: () => playBootHud(true),
     testTaskSound: () => playTaskSound(true),
+    testPromptSound: () => playPromptSound(true),
     cleanup
   };
 

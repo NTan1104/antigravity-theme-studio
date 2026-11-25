@@ -152,6 +152,9 @@ fn test_build_bundle_and_list_presets() {
     assert!(compiled.contains("Frost Light"));
     assert!(compiled.contains("toShortBlobUrl"));
     assert!(compiled.contains("ats-metrics-style"));
+    assert!(compiled.contains("syncPromptAttentionVoice"));
+    assert!(compiled.contains("inline-permission-card"));
+    assert!(compiled.contains("ask-question-option"));
 
     let presets = list_presets(&root.join("themes").join("presets.json")).unwrap();
     assert_eq!(presets[0].name, "Dark Glass Live");
@@ -392,6 +395,33 @@ fn test_media_server_range_206_and_claim_sound() {
         .filter(|&ok| ok)
         .count();
     assert_eq!(allowed_count, 1, "Only one concurrent claim-sound should win");
+
+    // 6. Test separate prompt claim-sound channel does not collide with task claim-sound
+    let mut sp = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    sp.write_all(
+        format!("POST /api/claim-sound?kind=prompt HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .as_bytes(),
+    )
+    .unwrap();
+    let mut rp = String::new();
+    sp.read_to_string(&mut rp).unwrap();
+    assert!(
+        rp.contains("\"allowed\":true") && rp.contains("\"kind\":\"prompt\""),
+        "Prompt claim-sound should have its own cooldown channel, got: {rp}"
+    );
+
+    let mut sp2 = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    sp2.write_all(
+        format!("POST /api/claim-sound?kind=prompt HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .as_bytes(),
+    )
+    .unwrap();
+    let mut rp2 = String::new();
+    sp2.read_to_string(&mut rp2).unwrap();
+    assert!(
+        rp2.contains("\"allowed\":false"),
+        "Immediate duplicate prompt claim-sound should be deduplicated, got: {rp2}"
+    );
 
     TEST_SHUTDOWN.store(true, std::sync::atomic::Ordering::SeqCst);
 }
